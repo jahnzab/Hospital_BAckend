@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+SQLAlchemy>=1.4
+psycopg2-binary
+passlib[bcrypt]
+PyJWT
+python-dotenv
+redis
+google-generativeai
+langchain
+langchain-groq
+langchain-community
+langchain-core
+sqlalchemy
