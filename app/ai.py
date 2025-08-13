@@ -18,17 +18,12 @@ load_dotenv()
 class HospitalChatbot:
     def __init__(self):
         """Initialize the Hospital Chatbot with LLM and database tools"""
-        # Initialize LLM (Groq)
-        # self.llm = ChatGroq(
-        #     groq_api_key=os.getenv("GROQ_API_KEY"),
-        #     model_name="Llama3-8b-8192"
-        # )
-        self.llm = ChatGoogleGenerativeAI(
-            model="gemini-2.0-flash",
-            google_api_key=os.getenv("GOOGLE_API_KEY","AIzaSyD9kmbO735ZRG-Vnk-iegTodps0ASbQq7A"),
-            temperature=0.2
-             )
-
+        Initialize LLM (Groq)
+        self.llm = ChatGroq(
+            groq_api_key=os.getenv("GROQ_API_KEY"),
+            model_name="Llama3-8b-8192"
+        )
+       
         # Initialize database connection
         self.POSTGRES_URI = os.getenv("POSTGRES_URI")
         if not self.POSTGRES_URI:
