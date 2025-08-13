@@ -13,19 +13,44 @@ def get_db():
         yield db
     finally:
         db.close()
-
-@router.post("/login", response_model=Token)
+@router.post("/login")
 def login(data: UserLogin, db: Session = Depends(get_db)):
     user = db.query(Users).filter(Users.username == data.username).first()
     print("DEBUG: user from DB:", user)
+
     if user:
-     print("DEBUG: stored hash:", user.password_hash)
-     print("DEBUG: incoming password:", data.password)
+        print("DEBUG: stored hash:", user.password_hash)
+        print("DEBUG: incoming password:", data.password)
 
     if not user or not verify_password(data.password, user.password_hash):
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
-    token = create_access_token({"sub": user.username, "role": user.role, "doctor_id": user.doctor_id})
-    return {"access_token": token}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials"
+        )
+
+    token = create_access_token({
+        "sub": user.username,
+        "role": user.role,
+        "doctor_id": user.doctor_id
+    })
+
+    return {
+        "access_token": token,
+        "token_type": "bearer"
+    }
+
+# @router.post("/login", response_model=Token)
+# def login(data: UserLogin, db: Session = Depends(get_db)):
+#     user = db.query(Users).filter(Users.username == data.username).first()
+#     print("DEBUG: user from DB:", user)
+#     if user:
+#      print("DEBUG: stored hash:", user.password_hash)
+#      print("DEBUG: incoming password:", data.password)
+
+#     if not user or not verify_password(data.password, user.password_hash):
+#         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
+#     token = create_access_token({"sub": user.username, "role": user.role, "doctor_id": user.doctor_id})
+#     return {"access_token": token}
 
 # @router.post("/register")
 # def register(data: UserLogin, db: Session = Depends(get_db)):
