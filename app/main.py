@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 app = FastAPI(title="SHMS Booking API (Postgres)")
 origins = [
      # local React dev
-    "https://hospital-frontend-lilac.vercel.app/",  # production React on Render
+    "https://hospital-frontend-lilac.vercel.app",  # production React on Render
 ]
 
 app.add_middleware(
