@@ -12,3 +12,4 @@ langchain-groq
 langchain-community
 langchain-core
 sqlalchemy
+langchain-google-genai
