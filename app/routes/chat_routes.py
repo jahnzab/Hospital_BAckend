@@ -443,15 +443,60 @@ def _generate_token():
 # -------------------------
 @router.post("/")
 def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
-    sess = get_session(msg.session_id) or {"state": "start", "data": {}, "messages": []}
+    # Restore or init session
+    sess = get_session(msg.session_id)
+    first_message = False
+    if not sess:
+        sess = {"state": "start", "data": {}, "messages": []}
+        first_message = True
+
     text = (msg.text or "").strip()
     ltext = text.lower()
     sess["messages"].append({"from": "user", "text": text})
     sess["messages"] = sess["messages"][-60:]
     state = sess.get("state", "start")
 
-    # ---------- Greeting ----------
-    if state == "start":
+    # --------------------------
+    # Process user input immediately even on first message
+    # --------------------------
+    intent = _intent(text)
+    date_token = None
+    spec_token = None
+    m_date = re.search(r"\b(today|tomorrow|\d{4}-\d{2}-\d{2})\b", ltext)
+    if m_date:
+        date_token = m_date.group(1)
+    spec_match = re.search(r"\b(cardio|cardiologist|oncologist|neurologist|orthop|derma|psychiatr|pediatr|gastro|ent|ophthalm)\w*\b", ltext)
+    if spec_match:
+        spec_token = spec_match.group(0)
+
+    # --------------------------
+    # LIST doctors logic
+    # --------------------------
+    if intent in ("list_today", "list_all") or date_token or spec_token:
+        # determine requested date
+        if date_token:
+            requested_date = _parse_date(date_token)
+        else:
+            requested_date = date.today()
+        spec = spec_token or (text if intent == "ask_specialization" else None)
+        if spec:
+            spec = spec.replace("cardio", "cardiologist")
+        rows = get_available_doctors_for_date(db, requested_date, specialization=spec)
+        if not rows:
+            return {"reply": f"❌ No doctors available on {requested_date}", "buttons": []}
+        
+        # Generate buttons
+        buttons = _buttons_for_doctors(rows)
+        sess["state"] = "choose_doctor_for_booking"
+        sess["data"]["recent_choices"] = [r.doctor_id for r in rows]
+        set_session(msg.session_id, sess)
+        reply_text = _md_doctor_list(rows) + "\n\n👉 Select a doctor to continue."
+        return {"reply": reply_text, "buttons": buttons}
+
+    # --------------------------
+    # GREETING for first message only
+    # --------------------------
+    if first_message or state == "start":
         sess["state"] = "awaiting_input"
         set_session(msg.session_id, sess)
         return {
@@ -469,6 +514,10 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                 {"type": "intent", "label": "Book appointment", "payload": "book appointment"},
             ],
         }
+
+    # --------------------------
+    # ... rest of booking flow ...
+    # --------------------------
 
     # ---------- Detect intent and date ----------
     date_token = None
