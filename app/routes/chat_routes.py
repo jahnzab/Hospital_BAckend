@@ -1,9 +1,8 @@
-import logging
+# import logging
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from typing import List, Optional, Dict
 from datetime import date, datetime, time as dtime, timedelta
-import re
 import random
 
 from ..database import SessionLocal
@@ -24,6 +23,7 @@ def get_db():
     finally:
         db.close()
 
+# Utilities
 def _coerce_time(v):
     if v is None: return None
     if isinstance(v, dtime): return v
@@ -50,15 +50,7 @@ def _md_doctor_list(rows: List[Availability_of_Doctors]) -> str:
     return "\n".join(lines)
 
 def _buttons_for_doctors(rows: List[Availability_of_Doctors]) -> List[Dict]:
-    buttons = []
-    for r in rows:
-        buttons.append({
-            "type": "doctor",
-            "id": r.doctor_id,
-            "label": f"Dr. {r.doctor.doctor_name} ({r.specialization})",
-            "payload": str(r.doctor_id)
-        })
-    return buttons
+    return [{"type": "doctor", "label": f"Dr. {r.doctor.doctor_name} ({r.specialization})", "payload": str(r.doctor_id)} for r in rows]
 
 def _buttons_for_slots(slots: List[datetime]) -> List[Dict]:
     return [{"type": "slot", "label": s.strftime("%I:%M %p"), "payload": s.isoformat()} for s in slots]
@@ -82,26 +74,15 @@ def _parse_date(text: str) -> Optional[date]:
 
 def _intent(text: str) -> str:
     t = text.lower()
-    if re.search(r"\b(book|booking|appointment)\b", t): return "book_start"
-    if re.search(r"\b(list|show|see)\b.*\b(doctors?)\b", t): return "list_doctors"
-    if any(k in t for k in ["cardio", "cardiologist", "ent", "neuro","derma", "ortho", "psychiatr", "pediatr", "oncologist","ophthalm"]):
-        return "ask_specialization"
+    if "book" in t: return "book_start"
+    if "doctor" in t or "show" in t or "list" in t: return "list_doctors"
     return "unknown"
 
-def _find_doctor_by_name_or_id(db: Session, text: str) -> Optional[Doctors]:
-    t = text.strip()
-    try:
-        did = int(t)
-        d = db.query(Doctors).filter(Doctors.doctor_id == did).first()
-        if d: 
-            return d
-    except:
-        pass
-    return db.query(Doctors).filter(Doctors.doctor_name.ilike(f"%{t}%")).first()
+def _find_doctor_by_id(db: Session, doctor_id: int) -> Optional[Doctors]:
+    return db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
 
 def get_available_doctors_for_date(db: Session, on_date: date, specialization: Optional[str]=None) -> List[Availability_of_Doctors]:
-    if on_date < date.today(): 
-        return []
+    if on_date < date.today(): return []
     q = db.query(Availability_of_Doctors).join(Doctors).filter(Availability_of_Doctors.date == on_date)
     if specialization:
         q = q.filter(Availability_of_Doctors.specialization.ilike(f"%{specialization}%"))
@@ -131,8 +112,9 @@ def _generate_slots_for_date(db: Session, doctor_id: int, on_date: date) -> List
         if (not min_start or cur >= min_start) and candidate not in booked_times:
             slots.append(candidate)
         cur += timedelta(minutes=slot_len)
-    return slots
+    return slots[:6]  # top 6 slots
 
+# Chat endpoint
 @router.post("/")
 def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
     sess = get_session(msg.session_id)
@@ -142,8 +124,6 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         first_message = True
 
     text = (msg.text or "").strip()
-    logger.debug(f"Received message: '{text}' Session before processing: {sess}")
-
     sess["messages"].append({"from": "user", "text": text})
     sess["messages"] = sess["messages"][-60:]
     state = sess.get("state", "start")
@@ -153,7 +133,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         sess["state"] = "awaiting_input"
         set_session(msg.session_id, sess)
         return {
-            "reply": "👋 **Welcome to SHMS Booking Assistant**\n\nI can help you with:\n• 🩺 Listing available doctors (today/tomorrow/future)\n• 🔎 Finding by specialization\n• 📅 Booking / ❌ Cancelling / 🔄 Rescheduling\n\nWhat would you like to do?",
+            "reply": "👋 **Welcome to SHMS Booking Assistant**\n\nI can help you with:\n• 🩺 Listing available doctors\n• 🔎 Finding by specialization\n• 📅 Booking / ❌ Cancelling / 🔄 Rescheduling\n\nWhat would you like to do?",
             "buttons": [
                 {"type": "intent", "label": "Show doctors today", "payload": "show doctors today"},
                 {"type": "intent", "label": "Show doctors tomorrow", "payload": "show doctors tomorrow"},
@@ -161,68 +141,85 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             ]
         }
 
-    intent = _intent(text)
-    date_token = _parse_date(text)
-    spec_token = None
-    spec_match = re.search(r"\b(cardio|cardiologist|oncologist|neurologist|orthop|derma|psychiatr|pediatr|gastro|ent|ophthalm)\w*\b", text.lower())
-    if spec_match:
-        spec_token = spec_match.group(0)
-
-    # List doctors flow
-    if intent in ("list_doctors", "ask_specialization") or date_token or spec_token:
-        requested_date = date_token or date.today()
-        spec = spec_token or (text if intent == "ask_specialization" else None)
-        if spec:
-            spec = spec.replace("cardio", "cardiologist")
-        rows = get_available_doctors_for_date(db, requested_date, specialization=spec)
-        if not rows:
-            return {"reply": "❌ No doctors available."}
-
-        # If user asks for today, skip date selection and go to gender directly
-        if requested_date == date.today():
-            sess["state"] = "choose_doctor_for_today"
-        else:
-            sess["state"] = "choose_doctor_for_booking"
-
-        sess["data"]["recent_choices"] = [r.doctor_id for r in rows]
+    # List doctors for date
+    if text.lower() in ["show doctors today", "show doctors tomorrow"]:
+        sel_date = date.today() if "today" in text.lower() else date.today() + timedelta(days=1)
+        doctors = get_available_doctors_for_date(db, sel_date)
+        if not doctors:
+            return {"reply": f"❌ No doctors available on {sel_date.isoformat()}."}
+        sess["state"] = "choose_doctor_for_booking"
+        sess["data"]["recent_choices"] = [r.doctor_id for r in doctors]
+        sess["data"]["selected_date"] = sel_date.isoformat()
         set_session(msg.session_id, sess)
-
         return {
-            "reply": _md_doctor_list(rows) + "\n\n👉 Select a doctor to continue.",
-            "buttons": _buttons_for_doctors(rows)
+            "reply": _md_doctor_list(doctors) + "\n\n👉 Select a doctor to continue.",
+            "buttons": _buttons_for_doctors(doctors)
         }
 
-    # Doctor selection
-    if state in ("choose_doctor_for_booking", "choose_doctor_for_today"):
-        d = _find_doctor_by_name_or_id(db, text)
-        if not d or d.doctor_id not in sess["data"].get("recent_choices", []):
-            available_rows = db.query(Availability_of_Doctors).join(Doctors).filter(
-                Availability_of_Doctors.date >= date.today()
-            ).limit(6).all()
-            return {
-                "reply": "❌ Please select a valid doctor from the options above.",
-                "buttons": _buttons_for_doctors(available_rows)
-            }
+    # Doctor selected
+    if state == "choose_doctor_for_booking":
+        try:
+            doctor_id = int(text)
+        except:
+            return {"reply": "❌ Please select a valid doctor.", "buttons": _buttons_for_doctors(
+                get_available_doctors_for_date(db, date.fromisoformat(sess["data"]["selected_date"]))
+            )}
+        doctor = _find_doctor_by_id(db, doctor_id)
+        if not doctor or doctor_id not in sess["data"]["recent_choices"]:
+            return {"reply": "❌ Invalid doctor selection.", "buttons": _buttons_for_doctors(
+                get_available_doctors_for_date(db, date.fromisoformat(sess["data"]["selected_date"]))
+            )}
+        sess["data"]["doctor_id"] = doctor_id
+        sess["state"] = "collect_patient_gender"
+        set_session(msg.session_id, sess)
+        return {
+            "reply": f"🩺 Selected **Dr. {doctor.doctor_name}** — {doctor.specialization}\n⚧️ Select patient gender:",
+            "buttons": _gender_buttons()
+        }
 
-        sess["data"]["doctor_id"] = d.doctor_id
-        if state == "choose_doctor_for_today":
-            sess["data"]["preferred_date"] = date.today().isoformat()
-            sess["state"] = "collect_patient_gender"
-            set_session(msg.session_id, sess)
-            return {"reply": "⚧️ Select patient gender:", "buttons": _gender_buttons()}
+    # Gender selection
+    if state == "collect_patient_gender":
+        gender = text.strip().capitalize()
+        if gender not in ["Male", "Female", "Other"]:
+            return {"reply": "⚧️ Please select a valid gender.", "buttons": _gender_buttons()}
+        sess["data"]["gender"] = gender
+        sess["state"] = "collect_patient_name"
+        set_session(msg.session_id, sess)
+        return {"reply": "🧑‍💼 What is the patient's full name?"}
 
-        else:
-            sess["state"] = "ask_date_for_booking"
-            set_session(msg.session_id, sess)
-            return {
-                "reply": f"🩺 Selected **Dr. {d.doctor_name}** — {d.specialization}\n\n📆 Which date would you like? *(today / tomorrow / YYYY-MM-DD)*",
-                "buttons": [
-                    {"type": "date", "label": "Today", "payload": "today"},
-                    {"type": "date", "label": "Tomorrow", "payload": "tomorrow"},
-                ]
-            }
+    # Name collection
+    if state == "collect_patient_name":
+        sess["data"]["patient_name"] = text.strip()
+        sess["state"] = "collect_patient_age"
+        set_session(msg.session_id, sess)
+        return {"reply": "🔢 Patient age?"}
 
-    # Continue with date, slots, patient info, gender, and booking...
-    # (You can keep the rest of your original booking flow here, slots, name, age, residence, confirmation)
+    # Age collection
+    if state == "collect_patient_age":
+        try:
+            age = int(text.strip())
+            assert 0 <= age <= 120
+        except:
+            return {"reply": "Please provide a valid age (0–120)."}
+        sess["data"]["age"] = age
+        sess["state"] = "collect_patient_residence"
+        set_session(msg.session_id, sess)
+        return {"reply": "🏠 Patient residence / city?"}
+
+    # Residence -> confirm booking
+    if state == "collect_patient_residence":
+        sess["data"]["residence"] = text.strip()
+        token = _generate_token()
+        sess["data"]["booking_token"] = token
+        sess["state"] = "booking_complete"
+        set_session(msg.session_id, sess)
+        doctor_id = sess["data"]["doctor_id"]
+        doctor = _find_doctor_by_id(db, doctor_id)
+        selected_date = date.fromisoformat(sess["data"]["selected_date"])
+        slots = _generate_slots_for_date(db, doctor_id, selected_date)
+        slot_dt = slots[0] if slots else datetime.combine(selected_date, dtime(10,0))
+        return {
+            "reply": f"✅ Booking confirmed for **{sess['data']['patient_name']}** with **Dr. {doctor.doctor_name}** on {slot_dt.strftime('%Y-%m-%d %I:%M %p')}.\nToken: {token}"
+        }
 
     return {"reply": "❌ I didn’t understand that. Please select an option from above."}
