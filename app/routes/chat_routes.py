@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from datetime import date, datetime, time as dtime, timedelta
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import re
 import random
 
@@ -34,8 +34,63 @@ def _get_day_hours(avail: Availability_of_Doctors):
     slot_len = getattr(avail, "slot_minutes", 20)
     return st, et, slot_len
 
-def _pretty_doctor_line(r: Availability_of_Doctors) -> str:
-    return f"- Dr. {r.doctor.doctor_name} ({r.specialization}) • Room {r.room_number} • ID: {r.doctor_id}"
+def _create_doctor_card(r: Availability_of_Doctors) -> Dict[str, Any]:
+    """Create a clickable doctor card with detailed information"""
+    doctor = r.doctor
+    experience_years = getattr(doctor, 'experience_years', 0) or 0
+    qualification = getattr(doctor, 'qualification', '') or 'MBBS'
+    rating = getattr(doctor, 'rating', 4.5) or 4.5
+    
+    return {
+        "type": "doctor_card",
+        "doctor_id": doctor.doctor_id,
+        "name": doctor.doctor_name,
+        "specialization": r.specialization,
+        "qualification": qualification,
+        "experience": f"{experience_years} years" if experience_years > 0 else "New practitioner",
+        "room_number": r.room_number,
+        "rating": rating,
+        "start_time": _coerce_time(r.start_time).strftime('%I:%M %p') if r.start_time else "9:00 AM",
+        "end_time": _coerce_time(r.end_time).strftime('%I:%M %p') if r.end_time else "5:00 PM",
+        "click_action": f"select_doctor_{doctor.doctor_id}",
+        "display_text": f"Dr. {doctor.doctor_name}"
+    }
+
+def _create_quick_action_buttons() -> List[Dict[str, Any]]:
+    """Create quick action buttons for today/tomorrow"""
+    return [
+        {
+            "type": "quick_button",
+            "text": "👨‍⚕️ Doctors Today",
+            "action": "show_doctors_today",
+            "style": "primary"
+        },
+        {
+            "type": "quick_button", 
+            "text": "📅 Doctors Tomorrow",
+            "action": "show_doctors_tomorrow",
+            "style": "secondary"
+        },
+        {
+            "type": "quick_button",
+            "text": "🔍 Find by Specialization", 
+            "action": "find_specialization",
+            "style": "outline"
+        }
+    ]
+
+def _create_time_slot_buttons(slots: List[datetime]) -> List[Dict[str, Any]]:
+    """Create clickable time slot buttons"""
+    buttons = []
+    for slot in slots[:8]:  # Show max 8 slots
+        buttons.append({
+            "type": "time_slot",
+            "time": slot.strftime('%I:%M %p'),
+            "datetime": slot.isoformat(),
+            "action": f"select_slot_{slot.isoformat()}",
+            "available": True
+        })
+    return buttons
 
 def _parse_date(text: str) -> Optional[date]:
     t = text.strip().lower()
@@ -117,70 +172,100 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
     sess["messages"] = sess["messages"][-60:]
     state = sess.get("state", "start")
 
-    # Greeting
+    # Handle button clicks (actions starting with specific prefixes)
+    if text.startswith("select_doctor_"):
+        doctor_id = int(text.replace("select_doctor_", ""))
+        doctor = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
+        if doctor and str(doctor_id) in sess["data"].get("available_doctors", {}):
+            sess["data"]["doctor_id"] = doctor_id
+            sess["state"] = "ask_date"
+            set_session(msg.session_id, sess)
+            return {
+                "reply": f"🩺 **Selected Dr. {doctor.doctor_name}** ({doctor.specialization})\n\nPlease select a date for your appointment:",
+                "quick_buttons": [
+                    {"type": "quick_button", "text": "Today", "action": "date_today", "style": "primary"},
+                    {"type": "quick_button", "text": "Tomorrow", "action": "date_tomorrow", "style": "primary"},
+                    {"type": "quick_button", "text": "Pick Date", "action": "pick_custom_date", "style": "outline"}
+                ]
+            }
+
+    if text.startswith("select_slot_"):
+        slot_iso = text.replace("select_slot_", "")
+        if slot_iso in sess["data"].get("available_slots", []):
+            sess["data"]["chosen_slot"] = slot_iso
+            sess["state"] = "collect_patient_name"
+            set_session(msg.session_id, sess)
+            slot_dt = datetime.fromisoformat(slot_iso)
+            return {
+                "reply": f"✅ **Time slot selected**: {slot_dt.strftime('%I:%M %p')}\n\n👤 Please enter the patient's full name:"
+            }
+
+    # Handle quick action buttons
+    if text in ["show_doctors_today", "date_today"]:
+        text = "today"
+    elif text in ["show_doctors_tomorrow", "date_tomorrow"]:
+        text = "tomorrow"
+
+    # Greeting with quick buttons
     if first_message:
         sess["state"] = "awaiting_input"
         set_session(msg.session_id, sess)
         return {
-            "reply": "👋 **Welcome to SHMS Booking Assistant**\nI can help you with:\n• 🩺 Listing available doctors\n• 🔎 Finding by specialization\n• 📅 Booking / ❌ Cancelling / 🔄 Rescheduling\nPlease type your request (e.g., 'list doctors today')."
+            "reply": "👋 **Welcome to SHMS Booking Assistant**\n\nI can help you book appointments with our available doctors. Choose an option below or type your request:",
+            "quick_buttons": _create_quick_action_buttons()
         }
 
-    # List doctors
-    intent = _intent(text)
-    date_token = _parse_date(text)
-
-    if intent in ("list_doctors", "ask_specialization") or date_token:
-        requested_date = date_token or date.today()
-        spec_match = re.search(r"\b(cardio|cardiologist|oncologist|neurologist|orthop|derma|psychiatr|pediatr|gastro|ent|ophthalm)\w*\b", text.lower())
-        spec = spec_match.group(0) if spec_match else None
-        if spec:
-            spec = spec.replace("cardio", "cardiologist")
-        rows = get_available_doctors_for_date(db, requested_date, specialization=spec)
-        if not rows:
-            return {"reply": "❌ No doctors available on that date."}
-        sess["state"] = "choose_doctor"
-        sess["data"]["available_doctors"] = {str(r.doctor_id): r for r in rows}
-        set_session(msg.session_id, sess)
-        reply_text = f"🩺 **Doctors available on {requested_date.isoformat()}**:\n"
-        for r in rows:
-            reply_text += _pretty_doctor_line(r) + "\n"
-        reply_text += "Please type the **name or ID** of the doctor to select."
-        return {"reply": reply_text}
-
-    # Doctor selected
+    # Handle state-specific logic first
+    
+    # Doctor selected (fallback for text input)
     if state == "choose_doctor":
         doc = _find_doctor_by_name_or_id(db, text)
         if not doc or str(doc.doctor_id) not in sess["data"].get("available_doctors", {}):
             available = sess["data"].get("available_doctors", {})
-            reply_text = "❌ Please select a valid doctor from list above:\n"
-            for r in available.values():
-                reply_text += _pretty_doctor_line(r) + "\n"
-            return {"reply": reply_text}
+            doctor_cards = [_create_doctor_card(r) for r in available.values()]
+            return {
+                "reply": "❌ Please select a doctor from the options below:",
+                "doctor_cards": doctor_cards
+            }
         sess["data"]["doctor_id"] = doc.doctor_id
         sess["state"] = "ask_date"
         set_session(msg.session_id, sess)
-        return {"reply": f"🩺 Selected Dr. {doc.doctor_name} ({doc.specialization}). Please type the **date** for booking (today/tomorrow/YYYY-MM-DD)."}
+        return {
+            "reply": f"🩺 **Selected Dr. {doc.doctor_name}** ({doc.specialization})\n\nPlease select a date:",
+            "quick_buttons": [
+                {"type": "quick_button", "text": "Today", "action": "date_today", "style": "primary"},
+                {"type": "quick_button", "text": "Tomorrow", "action": "date_tomorrow", "style": "primary"}
+            ]
+        }
 
     # Date selected
     if state == "ask_date":
         d = _parse_date(text)
         if not d:
-            return {"reply": "🗓️ Please provide a valid date (today/tomorrow/YYYY-MM-DD)."}
+            return {
+                "reply": "🗓️ Please select a valid date:",
+                "quick_buttons": [
+                    {"type": "quick_button", "text": "Today", "action": "date_today", "style": "primary"},
+                    {"type": "quick_button", "text": "Tomorrow", "action": "date_tomorrow", "style": "primary"}
+                ]
+            }
         doctor_id = sess["data"]["doctor_id"]
         slots = _generate_slots_for_date(db, doctor_id, d)
         if not slots:
             return {"reply": f"⚠️ No available slots for that doctor on {d.isoformat()}."}
+        
         sess["data"]["preferred_date"] = d.isoformat()
-        sess["data"]["available_slots"] = [s.isoformat() for s in slots[:6]]
+        sess["data"]["available_slots"] = [s.isoformat() for s in slots[:8]]
         sess["state"] = "choose_slot"
         set_session(msg.session_id, sess)
-        reply_text = f"✅ Available slots on {d.isoformat()}:\n"
-        for s in slots[:6]:
-            reply_text += f"- {s.strftime('%I:%M %p')}\n"
-        reply_text += "Please type the slot you want to book (e.g., '10:00 AM')."
-        return {"reply": reply_text}
+        
+        doctor = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
+        return {
+            "reply": f"📅 **Available time slots for Dr. {doctor.doctor_name}** on {d.isoformat()}:\n\nClick on your preferred time:",
+            "time_slots": _create_time_slot_buttons(slots)
+        }
 
-    # Slot selected
+    # Slot selected (fallback for text input)
     if state == "choose_slot":
         chosen_slot = None
         for s_iso in sess["data"].get("available_slots", []):
@@ -188,23 +273,23 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                 chosen_slot = s_iso
                 break
         if not chosen_slot:
-            reply_text = "❌ Invalid slot. Please type one of the following:\n"
-            for s_iso in sess["data"].get("available_slots", []):
-                reply_text += f"- {datetime.fromisoformat(s_iso).strftime('%I:%M %p')}\n"
-            return {"reply": reply_text}
+            slots = [datetime.fromisoformat(s) for s in sess["data"].get("available_slots", [])]
+            return {
+                "reply": "❌ Please select a valid time slot:",
+                "time_slots": _create_time_slot_buttons(slots)
+            }
         sess["data"]["chosen_slot"] = chosen_slot
         sess["state"] = "collect_patient_name"
         set_session(msg.session_id, sess)
-        return {"reply": "🧑‍💼 Please type the patient's full name."}
+        return {"reply": "👤 Please enter the patient's full name:"}
 
-    # Patient name
+    # Patient details collection
     if state == "collect_patient_name":
         sess["data"]["patient_name"] = text.strip()
         sess["state"] = "collect_patient_age"
         set_session(msg.session_id, sess)
-        return {"reply": "🔢 Please type the patient's age."}
+        return {"reply": "🔢 Please enter the patient's age:"}
 
-    # Patient age
     if state == "collect_patient_age":
         try:
             age = int(text.strip())
@@ -214,26 +299,112 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         sess["data"]["age"] = age
         sess["state"] = "collect_patient_gender"
         set_session(msg.session_id, sess)
-        return {"reply": "⚧️ Please type the patient's gender (Male/Female/Other)."}
+        return {
+            "reply": "⚧️ Please select the patient's gender:",
+            "quick_buttons": [
+                {"type": "quick_button", "text": "Male", "action": "gender_male", "style": "outline"},
+                {"type": "quick_button", "text": "Female", "action": "gender_female", "style": "outline"},
+                {"type": "quick_button", "text": "Other", "action": "gender_other", "style": "outline"}
+            ]
+        }
 
-    # Patient gender
+    # Handle gender selection
+    if text.startswith("gender_"):
+        gender_map = {"gender_male": "Male", "gender_female": "Female", "gender_other": "Other"}
+        if text in gender_map:
+            sess["data"]["gender"] = gender_map[text]
+            sess["state"] = "booking_complete"
+            set_session(msg.session_id, sess)
+
+            # Save booking
+            token = _generate_token()
+            sess["data"]["booking_token"] = token
+            doctor_id = sess["data"]["doctor_id"]
+            slot_dt = datetime.fromisoformat(sess["data"]["chosen_slot"])
+            doctor = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
+
+            return {
+                "reply": f"✅ **Booking Confirmed!**\n\n👤 **Patient**: {sess['data']['patient_name']}\n🩺 **Doctor**: Dr. {doctor.doctor_name}\n📅 **Date & Time**: {slot_dt.strftime('%Y-%m-%d %I:%M %p')}\n🎫 **Token**: {token}\n\n📱 Please save this token for your records.",
+                "quick_buttons": [
+                    {"type": "quick_button", "text": "🏠 Back to Home", "action": "restart", "style": "primary"},
+                    {"type": "quick_button", "text": "📅 Book Another", "action": "show_doctors_today", "style": "outline"}
+                ]
+            }
+
     if state == "collect_patient_gender":
         g = text.strip().capitalize()
         if g not in ("Male","Female","Other"):
-            return {"reply":"Please type Male, Female, or Other."}
+            return {
+                "reply": "Please select a valid gender:",
+                "quick_buttons": [
+                    {"type": "quick_button", "text": "Male", "action": "gender_male", "style": "outline"},
+                    {"type": "quick_button", "text": "Female", "action": "gender_female", "style": "outline"},
+                    {"type": "quick_button", "text": "Other", "action": "gender_other", "style": "outline"}
+                ]
+            }
         sess["data"]["gender"] = g
         sess["state"] = "booking_complete"
         set_session(msg.session_id, sess)
 
-        # Save booking (optional)
+        # Save booking
         token = _generate_token()
         sess["data"]["booking_token"] = token
         doctor_id = sess["data"]["doctor_id"]
         slot_dt = datetime.fromisoformat(sess["data"]["chosen_slot"])
+        doctor = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
 
         return {
-            "reply": f"✅ Booking confirmed for **{sess['data']['patient_name']}** with doctor ID {doctor_id} on {slot_dt.strftime('%Y-%m-%d %I:%M %p')}.\nToken: {token}"
+            "reply": f"✅ **Booking Confirmed!**\n\n👤 **Patient**: {sess['data']['patient_name']}\n🩺 **Doctor**: Dr. {doctor.doctor_name}\n📅 **Date & Time**: {slot_dt.strftime('%Y-%m-%d %I:%M %p')}\n🎫 **Token**: {token}",
+            "quick_buttons": [
+                {"type": "quick_button", "text": "🏠 Back to Home", "action": "restart", "style": "primary"}
+            ]
+        }
+
+    # Handle restart
+    if text == "restart":
+        sess = {"state": "awaiting_input", "data": {}, "messages": []}
+        set_session(msg.session_id, sess)
+        return {
+            "reply": "👋 **Welcome back!** How can I help you today?",
+            "quick_buttons": _create_quick_action_buttons()
+        }
+
+    # Handle general intents only if not in a specific state
+    intent = _intent(text)
+    date_token = _parse_date(text)
+
+    # List doctors with enhanced cards
+    if intent in ("list_doctors", "ask_specialization") or (state == "awaiting_input" and date_token):
+        requested_date = date_token or date.today()
+        spec_match = re.search(r"\b(cardio|cardiologist|oncologist|neurologist|orthop|derma|psychiatr|pediatr|gastro|ent|ophthalm)\w*\b", text.lower())
+        spec = spec_match.group(0) if spec_match else None
+        if spec:
+            spec = spec.replace("cardio", "cardiologist")
+        
+        rows = get_available_doctors_for_date(db, requested_date, specialization=spec)
+        if not rows:
+            return {
+                "reply": f"❌ No doctors available on {requested_date.isoformat()}.",
+                "quick_buttons": [
+                    {"type": "quick_button", "text": "Try Tomorrow", "action": "show_doctors_tomorrow", "style": "primary"},
+                    {"type": "quick_button", "text": "🏠 Back to Home", "action": "restart", "style": "outline"}
+                ]
+            }
+        
+        sess["state"] = "choose_doctor"
+        sess["data"]["available_doctors"] = {str(r.doctor_id): r for r in rows}
+        set_session(msg.session_id, sess)
+        
+        doctor_cards = [_create_doctor_card(r) for r in rows]
+        spec_text = f" ({spec})" if spec else ""
+        
+        return {
+            "reply": f"🩺 **Available Doctors{spec_text}** on {requested_date.isoformat()}:\n\nClick on a doctor to book an appointment:",
+            "doctor_cards": doctor_cards
         }
 
     # Fallback
-    return {"reply": "❌ I didn’t understand that. Please follow the instructions above."}
+    return {
+        "reply": "❌ I didn't understand that. Please use the options below or try typing your request:",
+        "quick_buttons": _create_quick_action_buttons()
+    }
