@@ -16,12 +16,18 @@ class ChatMessage(BaseModel):
     session_id: str
     text: str
 
-# Patient form & booking
 class PatientForm(BaseModel):
     patient_name: str
+    phone[str]= None  # ✅ Make required instead of optional
     gender: Optional[str] = None
     age: Optional[int] = None
     residence: Optional[str] = None
+# Patient form & booking
+# class PatientForm(BaseModel):
+#     patient_name: str
+#     gender: Optional[str] = None
+#     age: Optional[int] = None
+#     residence: Optional[str] = None
 
 class BookRequest(BaseModel):
     doctor_id: int
