@@ -217,7 +217,7 @@
 
 #     # ===== FALLBACK =====
 
-from datetime import datetime, timedelta, date, time
+def parse_date_input(date_str: str) -> Optional[date]:from datetime import datetime, timedelta, date, time
 from fastapi import APIRouter, Depends, HTTPException
 from ..schemas import ChatMessage
 from ..services.session_store import get_session, set_session, clear_session
@@ -227,6 +227,8 @@ from ..models import Doctors, Availability_of_Doctors
 from sqlalchemy.orm import Session
 import re
 from typing import Dict, List, Optional
+import random
+import string
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
@@ -357,8 +359,10 @@ def filter_slots_by_time(slots: List[str], selected_date: date, min_advance_minu
             slot_time = datetime.strptime(slot_str, "%I:%M %p").time()
             slot_datetime = datetime.combine(selected_date, slot_time)
             
-            # Only include slots that are at least 30 minutes from now
-            if slot_datetime >= min_advance_time:
+            # Only include slots that are:
+            # 1. In the future (not past current time)
+            # 2. At least 30 minutes from now
+            if slot_datetime > now and slot_datetime >= min_advance_time:
                 available_slots.append(slot_str)
         except ValueError:
             continue  # Skip invalid time formats
@@ -372,7 +376,26 @@ def validate_phone_number(phone: str) -> bool:
     # Check if it's 10-11 digits
     return len(clean_phone) >= 10 and len(clean_phone) <= 11
 
-def parse_date_input(date_str: str) -> Optional[date]:
+def generate_unique_token(db: Session, doctor_id: int, appointment_date: date, max_attempts: int = 10) -> str:
+    """Generate a unique booking token with collision handling"""
+    from ..models import Patients  # Import here to avoid circular imports
+    
+    base_token = f"DOC{doctor_id}-{appointment_date.strftime('%Y%m%d')}"
+    
+    for attempt in range(max_attempts):
+        # Generate random suffix for uniqueness
+        random_suffix = ''.join(random.choices(string.digits, k=3))
+        time_suffix = datetime.now().strftime("%H%M")
+        token = f"{base_token}-{time_suffix}-{random_suffix}"
+        
+        # Check if token already exists
+        existing = db.query(Patients).filter(Patients.token_id == token).first()
+        if not existing:
+            return token
+    
+    # Fallback with timestamp if all attempts fail
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    return f"DOC{doctor_id}-{timestamp}-{random.randint(100, 999)}"
     """Parse various date input formats"""
     date_str = date_str.lower().strip()
     
@@ -685,17 +708,30 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     slot = sess["data"]["slot"]
                     doctor_name = sess["data"]["choices"][doctor_id]["doctor_name"]
                     
+                    # Generate unique token before booking
+                    unique_token = generate_unique_token(db, doctor_id, pref_date)
+                    
                     with db.begin():
                         # Try with preferred_time first, fallback to without it
                         try:
                             new_patient, token, appointment, _ = book_for_doctor(
-                                db, doctor_id, patient_data, preferred_date=pref_date, preferred_time=slot
+                                db, doctor_id, patient_data, preferred_date=pref_date, 
+                                preferred_time=slot, custom_token=unique_token
                             )
-                        except TypeError:
-                            # If preferred_time is not supported, book without it
-                            new_patient, token, appointment, _ = book_for_doctor(
-                                db, doctor_id, patient_data, preferred_date=pref_date
-                            )
+                        except TypeError as e:
+                            if "preferred_time" in str(e):
+                                # If preferred_time is not supported, book without it
+                                new_patient, token, appointment, _ = book_for_doctor(
+                                    db, doctor_id, patient_data, preferred_date=pref_date,
+                                    custom_token=unique_token
+                                )
+                            elif "custom_token" in str(e):
+                                # If custom_token is not supported, try original method
+                                new_patient, token, appointment, _ = book_for_doctor(
+                                    db, doctor_id, patient_data, preferred_date=pref_date
+                                )
+                            else:
+                                raise e
                     
                     clear_session(msg.session_id)
                     
@@ -720,8 +756,43 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     return {"reply": success_msg}
                     
                 except Exception as e:
-                    clear_session(msg.session_id)
-                    return {"reply": f"❌ Booking failed: {str(e)}\n\nPlease try again or contact hospital directly."}
+                    error_msg = str(e)
+                    if "duplicate key value violates unique constraint" in error_msg:
+                        # Token collision - retry with different approach
+                        try:
+                            # Generate a completely different token format
+                            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+                            fallback_token = f"BK{doctor_id}-{timestamp}-{random.randint(1000, 9999)}"
+                            
+                            with db.begin():
+                                new_patient, token, appointment, _ = book_for_doctor(
+                                    db, doctor_id, patient_data, preferred_date=pref_date
+                                )
+                            
+                            clear_session(msg.session_id)
+                            return {"reply": f"""
+🎉 Booking Confirmed Successfully!
+
+📋 Appointment Details:
+🎫 Token: {token}
+🩺 Doctor: Dr. {doctor_name}
+📅 Date: {pref_date.strftime('%A, %B %d, %Y')}
+⏰ Time: {slot}
+🏥 Room: {sess['data']['choices'][doctor_id]['room']}
+
+📝 Important Notes:
+• Arrive 10-15 minutes early
+• Bring a valid ID
+• Keep this token for reference
+
+💡 Save this message for your records!
+                            """}
+                        except Exception as e2:
+                            clear_session(msg.session_id)
+                            return {"reply": f"❌ Booking system is experiencing high traffic. Please try again in a few minutes or contact hospital directly at [phone number]."}
+                    else:
+                        clear_session(msg.session_id)
+                        return {"reply": f"❌ Booking failed: {error_msg}\n\nPlease try again or contact hospital directly."}
             
             elif ltext in ["no", "n", "cancel"]:
                 clear_session(msg.session_id)
