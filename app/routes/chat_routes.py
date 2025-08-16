@@ -639,4 +639,4 @@ What brings you here today?
             set_session(msg.session_id, sess)
             return chat_endpoint(msg, db)  # Recursive call to handle detected specialization
         
-        return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms (like 'toothache
+        return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms (like 'toothache', 'headache', 'heart problem')\n• Mentioning a specialization (like 'Cardiologist', 'Dentist')\n• Typing 'help' for guidance\n• Typing 'show doctors' to see all available doctors"}
