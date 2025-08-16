@@ -431,31 +431,30 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         return {"reply": f"Confirm booking for {sess['data']['patient_name']} with Dr. {d.doctor_name} on {sess['data']['preferred_date']} at {slot}? Reply 'yes' to confirm."}
 
     if state == "confirm":
-        if ltext in ["yes", "y", "confirm"]:
-            pdata = {
-                "patient_name": sess["data"]["patient_name"],
-                "age": sess["data"]["age"],
-                "gender": sess["data"]["gender"],
-                "residence": sess["data"]["residence"]
-            }
-            doctor_id = sess["data"]["doctor_id"]
-            pref_date = sess["data"]["preferred_date"]
-            slot = sess["data"]["slot"]
-            try:
-                with db.begin():
-                    new_patient, token, _, _ = book_for_doctor(db, doctor_id, pdata, preferred_date=pref_date)
-                    # make token small based on doctor name
-                    token = f"Doc{doctor_id}-001"
-                clear_session(msg.session_id)
-                d = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
-                return {"reply": f"✅ Booking confirmed for Dr. {d.doctor_name} at {slot} on {pref_date}. Token: {token}. Please arrive 5-10 minutes early."}
-            except Exception as e:
-                sess["state"] = "start"
-                set_session(msg.session_id, sess)
-                return {"reply": f"Booking failed: {str(e)}"}
-        else:
+      if ltext in ["yes", "y", "confirm"]:
+        pdata = {
+            "patient_name": sess["data"]["patient_name"],
+            "age": sess["data"]["age"],
+            "gender": sess["data"]["gender"],
+            "residence": sess["data"]["residence"]
+        }
+        doctor_id = sess["data"]["doctor_id"]
+        pref_date = sess["data"]["preferred_date"]
+        slot = sess["data"]["slot"]
+        try:
+            with db.begin():
+                new_patient, token, _, _ = book_for_doctor(
+                    db, doctor_id, pdata, preferred_date=pref_date
+                )
+                # DO NOT overwrite token; use the one returned by book_for_doctor
             clear_session(msg.session_id)
-            return {"reply": "Booking cancelled. Start again to book another slot."}
+            d = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
+            return {"reply": f"✅ Booking confirmed for Dr. {d.doctor_name} at {slot} on {pref_date}. Token: {token}. Please arrive 5-10 minutes early."}
+        except Exception as e:
+            sess["state"] = "start"
+            set_session(msg.session_id, sess)
+            return {"reply": f"Booking failed: {str(e)}"}
+
 
     clear_session(msg.session_id)
     return {"reply": "I didn't understand that. Please type specialization, doctor name, or your symptom."}
