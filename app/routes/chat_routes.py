@@ -58,6 +58,10 @@ SPECIALIZATION_ALIASES = {
     "dental doctor": "Dentist"
 }
 
+def get_current_time():
+    """Get current time dynamically"""
+    return datetime.now()
+
 def parse_date_input(date_str: str) -> Optional[date]:
     """Parse various date input formats - FIXED VERSION"""
     date_str = date_str.lower().strip()
@@ -166,7 +170,7 @@ def filter_slots_by_time(slots: List[str], selected_date: date, min_advance_minu
         return slots
     
     # For today, filter based on current time
-    now = datetime.now()
+    now = get_current_time()  # Use dynamic current time
     min_advance_time = now + timedelta(minutes=min_advance_minutes)
     
     available_slots = []
@@ -202,7 +206,7 @@ def generate_unique_token(db: Session, doctor_id: int, appointment_date: date, m
     for attempt in range(max_attempts):
         # Generate random suffix for uniqueness
         random_suffix = ''.join(random.choices(string.digits, k=3))
-        time_suffix = datetime.now().strftime("%H%M")
+        time_suffix = get_current_time().strftime("%H%M")  # Use dynamic current time
         token = f"{base_token}-{time_suffix}-{random_suffix}"
         
         # Check if token already exists
@@ -211,7 +215,7 @@ def generate_unique_token(db: Session, doctor_id: int, appointment_date: date, m
             return token
     
     # Fallback with timestamp if all attempts fail
-    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    timestamp = get_current_time().strftime("%Y%m%d%H%M%S")  # Use dynamic current time
     return f"DOC{doctor_id}-{timestamp}-{random.randint(100, 999)}"
 
 @router.post("/")
@@ -222,7 +226,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         ltext = text.lower()
         
         # Add message to history
-        sess["messages"].append({"from": "user", "text": text, "timestamp": datetime.now().isoformat()})
+        sess["messages"].append({"from": "user", "text": text, "timestamp": get_current_time().isoformat()})
         sess["messages"] = sess["messages"][-50:]  # Keep last 50 messages
         
         state = sess.get("state", "start")
@@ -254,7 +258,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 💡 Tips:
 • Describe your symptoms clearly
 • Book at least 30 minutes in advance
-• Have your details ready (name, age, phone)
+• Have your details ready (name, age, address)
 • Keep your booking token safe for cancellation
             """
             return {"reply": help_text}
@@ -386,16 +390,6 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                 return {"reply": "❌ Please select: Male / Female / Other"}
             
             sess["data"]["gender"] = gender
-            sess["state"] = "collect_phone"
-            set_session(msg.session_id, sess)
-            return {"reply": "📱 Phone number? (for appointment confirmation)"}
-
-        if state == "collect_phone":
-            phone = text.strip()
-            if not validate_phone_number(phone):
-                return {"reply": "❌ Please enter a valid phone number (10-11 digits)."}
-            
-            sess["data"]["phone"] = phone
             sess["state"] = "collect_residence"
             set_session(msg.session_id, sess)
             return {"reply": "🏠 City/Address?"}
@@ -440,7 +434,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             set_session(msg.session_id, sess)
 
             formatted_date = pref_date.strftime("%A, %B %d, %Y")
-            current_time = datetime.now().strftime("%I:%M %p")
+            current_time = get_current_time().strftime("%I:%M %p")  # Use dynamic current time
             
             # Show helpful message if it's today and slots might seem old
             time_note = ""
@@ -478,20 +472,20 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             summary = f"""
 📋 Booking Summary:
 👤 Patient: {sess['data']['patient_name']} ({sess['data']['age']} years, {sess['data']['gender']})
-📱 Phone: {sess['data']['phone']}
 🏠 Address: {sess['data']['residence']}
 🩺 Doctor: Dr. {doctor_name} ({specialization})
 🏥 Room: {room}
 📅 Date: {pref_date.strftime('%A, %B %d, %Y')}
 ⏰ Time: {slot}
 
-✅ Type 'YES' to confirm booking
-❌ Type 'NO' to cancel
+✅ Type 'YES' or 'yes' to confirm booking
+❌ Type 'NO' or 'no' to cancel
             """
             return {"reply": summary}
 
         # ===== BOOKING CONFIRMATION =====
         if state == "confirm":
+            # Fixed: Accept both "yes" and "YES" (case insensitive)
             if ltext in ["yes", "y", "confirm", "ok"]:
                 try:
                     # Prepare patient data
@@ -499,7 +493,6 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                         "patient_name": sess["data"]["patient_name"],
                         "age": sess["data"]["age"],
                         "gender": sess["data"]["gender"],
-                        "phone": sess["data"]["phone"],
                         "residence": sess["data"]["residence"]
                     }
                     
@@ -508,42 +501,24 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     slot = sess["data"]["slot"]
                     doctor_name = sess["data"]["choices"][doctor_id]["doctor_name"]
                     
-                    # Generate unique token before booking
-                    unique_token = generate_unique_token(db, doctor_id, pref_date)
-                    
-                    # Remove db.begin() since the session already has a transaction
-                    # Try with preferred_time first, fallback to without it
+                    # Fixed: Simplified booking approach - remove custom_token parameter
                     try:
-                        new_patient, token, appointment, _ = book_for_doctor(
-                            db, doctor_id, patient_data, preferred_date=pref_date, 
-                            preferred_time=slot, custom_token=unique_token
-                        )
-                        # Commit the transaction
-                        db.commit()
-                    except TypeError as e:
-                        db.rollback()  # Rollback on error
-                        if "preferred_time" in str(e):
-                            # If preferred_time is not supported, book without it
+                        # First try with preferred_time parameter
+                        try:
                             new_patient, token, appointment, _ = book_for_doctor(
-                                db, doctor_id, patient_data, preferred_date=pref_date,
-                                custom_token=unique_token
+                                db, doctor_id, patient_data, preferred_date=pref_date, 
+                                preferred_time=slot
                             )
-                            db.commit()
-                        elif "custom_token" in str(e):
-                            # If custom_token is not supported, try original method
+                        except TypeError:
+                            # If preferred_time is not supported, try without it
                             new_patient, token, appointment, _ = book_for_doctor(
                                 db, doctor_id, patient_data, preferred_date=pref_date
                             )
-                            db.commit()
-                        else:
-                            raise e
-                    except Exception as e:
-                        db.rollback()  # Rollback on any other error
-                        raise e
-                    
-                    clear_session(msg.session_id)
-                    
-                    success_msg = f"""
+                        
+                        db.commit()
+                        clear_session(msg.session_id)
+                        
+                        success_msg = f"""
 🎉 Booking Confirmed Successfully!
 
 📋 Appointment Details:
@@ -560,53 +535,31 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 • For cancellation, use: "cancel booking"
 
 💡 Save this message for your records!
-                    """
-                    return {"reply": success_msg}
-                    
-                except Exception as e:
-                    error_msg = str(e)
-                    if "duplicate key value violates unique constraint" in error_msg:
-                        # Token collision - retry with different approach
-                        try:
-                            # Generate a completely different token format
-                            timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
-                            fallback_token = f"BK{doctor_id}-{timestamp}-{random.randint(1000, 9999)}"
-                            
-                            new_patient, token, appointment, _ = book_for_doctor(
-                                db, doctor_id, patient_data, preferred_date=pref_date
-                            )
-                            db.commit()
-                            
-                            clear_session(msg.session_id)
-                            return {"reply": f"""
-🎉 Booking Confirmed Successfully!
-
-📋 Appointment Details:
-🎫 Token: {token}
-🩺 Doctor: Dr. {doctor_name}
-📅 Date: {pref_date.strftime('%A, %B %d, %Y')}
-⏰ Time: {slot}
-🏥 Room: {sess['data']['choices'][doctor_id]['room']}
-
-📝 Important Notes:
-• Arrive 10-15 minutes early
-• Bring a valid ID
-• Keep this token for reference
-
-💡 Save this message for your records!
-                            """}
-                        except Exception as e2:
-                            clear_session(msg.session_id)
-                            return {"reply": f"❌ Booking system is experiencing high traffic. Please try again in a few minutes or contact hospital directly at [phone number]."}
-                    else:
+                        """
+                        return {"reply": success_msg}
+                        
+                    except Exception as e:
+                        db.rollback()
                         clear_session(msg.session_id)
-                        return {"reply": f"❌ Booking failed: {error_msg}\n\nPlease try again or contact hospital directly."}
+                        
+                        # Improved error handling
+                        error_msg = str(e)
+                        if "duplicate" in error_msg.lower() or "unique constraint" in error_msg.lower():
+                            return {"reply": "❌ This time slot was just booked by another patient. Please try selecting a different time slot."}
+                        elif "not available" in error_msg.lower():
+                            return {"reply": "❌ Selected time slot is no longer available. Please try booking again with a different time."}
+                        else:
+                            return {"reply": f"❌ Booking failed: {error_msg}\n\nPlease try again or contact hospital directly."}
+                            
+                except Exception as e:
+                    clear_session(msg.session_id)
+                    return {"reply": f"❌ System error during booking: {str(e)}\n\nPlease try again or contact hospital directly."}
             
             elif ltext in ["no", "n", "cancel"]:
                 clear_session(msg.session_id)
                 return {"reply": "❌ Booking cancelled. Feel free to start over anytime!"}
             else:
-                return {"reply": "❌ Please type 'YES' or 'yes' to confirm, or 'NO' to cancel."}
+                return {"reply": "❌ Please type 'YES' or 'yes' to confirm, or 'NO' or 'no' to cancel."}
 
         # ===== START STATE =====
         if state == "start":
