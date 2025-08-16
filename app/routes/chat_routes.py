@@ -218,26 +218,17 @@
 #     # ===== FALLBACK =====
 #     clear_session(msg.session_id)
 #     return {"reply": "Session reset. Please type which specialization or doctor you want to book."}
-
-from datetime import datetime, timedelta, time
+from datetime import datetime, timedelta, time, date
 from fastapi import APIRouter, Depends
 from ..schemas import ChatMessage
 from ..services.session_store import get_session, set_session, clear_session
 from ..database import SessionLocal
 from ..services.appointment_service import book_for_doctor, cancel_appointment
-from datetime import date, timedelta
 from ..models import Doctors, Patients, Availability_of_Doctors
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 router = APIRouter(prefix="/chat", tags=["chat"])
-
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
 SYMPTOM_MAP = {
     "heart": "Cardiologist",
@@ -247,8 +238,14 @@ SYMPTOM_MAP = {
     "skin": "Dermatologist",
     "brain": "Neurologist",
     "eye": "Ophthalmologist",
-    # add more mappings as needed
 }
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
 def format_doctor_row(d):
     slots = d.get("slots", ["N/A"])
@@ -302,76 +299,57 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     "doctor_name": r.doctor.doctor_name,
                     "specialization": r.doctor.specialization,
                     "room": r.room_number,
-                    "slots": ["10:00 AM", "11:00 AM", "2:00 PM", "4:00 PM"]  # example slots
+                    "slots": ["10:00 AM", "11:00 AM", "2:00 PM", "4:00 PM"]
                 }
                 doctors_list.append(format_doctor_row(doctor_dict))
             return {"reply": f"Based on your symptom, I suggest these doctors:\n" + "\n".join(doctors_list)}
 
     # ===== LIST DOCTORS =====
     if "list doctor" in ltext or "show doctor" in ltext:
-         today = date.today()
-         future_days = 7  # show next 7 days, adjust as needed
+        today = date.today()
+        future_days = 7  # show next 7 days
 
-         # Map common symptoms to specializations
-         symptom_map = {
-    "heart": "Cardiologist",
-    "headache": "Neurologist",
-    "skin": "Dermatologist",
-    "ear": "ENT Specialist",
-    "eye": "Ophthalmologist",
-    # add more mappings as needed
-          }
-
-         query_specialization = text.strip()
-         for keyword, spec in symptom_map.items():
+        query_specialization = text.strip()
+        for keyword, spec in SYMPTOM_MAP.items():
             if keyword in text.lower():
-               query_specialization = spec
-               break
+                query_specialization = spec
+                break
 
-         # Fetch doctors from today onward
-         rows = (
-          db.query(Availability_of_Doctors)
-           .join(Doctors)
-           .filter(
-           Availability_of_Doctors.date >= today,
-           Availability_of_Doctors.specialization.ilike(f"%{query_specialization}%")
-         )
-         .order_by(Availability_of_Doctors.date)
-         .all()
-)
+        rows = db.query(Availability_of_Doctors).join(Doctors).filter(
+            Availability_of_Doctors.date >= today,
+            Availability_of_Doctors.specialization.ilike(f"%{query_specialization}%")
+        ).order_by(Availability_of_Doctors.date).all()
 
-         if not rows:
-          return {"reply": f"No doctors found for '{query_specialization}'. Try another specialization or symptom."}
+        if not rows:
+            return {"reply": f"No doctors found for '{query_specialization}'. Try another specialization or symptom."}
 
-# Build doctor list with date & slots
-doctor_dict = {}
-for r in rows:
-    key = r.doctor_id
-    if key not in doctor_dict:
-        doctor_dict[key] = {
-            "doctor_name": r.doctor.doctor_name,
-            "specialization": r.doctor.specialization,
-            "room": r.room_number,
-            "dates": {}
-        }
-    # Generate slots from 10:00 AM to 5:00 PM with 10 min interval
-    slot_list = []
-    start_time = datetime.combine(r.date, time(10, 0))
-    end_time = datetime.combine(r.date, time(17, 0))
-    while start_time <= end_time:
-        slot_list.append(start_time.strftime("%I:%M %p"))
-        start_time += timedelta(minutes=10)
-    doctor_dict[key]["dates"][r.date.isoformat()] = slot_list
+        doctor_dict = {}
+        for r in rows:
+            key = r.doctor_id
+            if key not in doctor_dict:
+                doctor_dict[key] = {
+                    "doctor_name": r.doctor.doctor_name,
+                    "specialization": r.doctor.specialization,
+                    "room": r.room_number,
+                    "dates": {}
+                }
+            slot_list = []
+            start_time = datetime.combine(r.date, time(10, 0))
+            end_time = datetime.combine(r.date, time(17, 0))
+            while start_time <= end_time:
+                slot_list.append(start_time.strftime("%I:%M %p"))
+                start_time += timedelta(minutes=10)
+            doctor_dict[key]["dates"][r.date.isoformat()] = slot_list
 
-# Prepare readable reply: one doctor per row
-choices = []
-for d_id, info in doctor_dict.items():
-    for d_date, slots in info["dates"].items():
-        slot_str = ", ".join(slots)
-        choices.append(f"- {info['doctor_name']} ({info['specialization']}) | Room {info['room']} | Date: {d_date} | ID: {d_id} | Slots: {slot_str}")
+        choices = []
+        for d_id, info in doctor_dict.items():
+            for d_date, slots in info["dates"].items():
+                slot_str = ", ".join(slots)
+                choices.append(f"- {info['doctor_name']} ({info['specialization']}) | Room {info['room']} | Date: {d_date} | ID: {d_id} | Slots: {slot_str}")
 
-reply_text = f"Based on your input, here are the available doctors:\n" + "\n".join(choices)
-return {"reply": reply_text}
+        reply_text = f"Based on your input, here are the available doctors:\n" + "\n".join(choices)
+        return {"reply": reply_text}
+
     # ===== BOOKING FLOW =====
     if state == "start":
         sess["state"] = "choose_specialization"
@@ -403,6 +381,7 @@ return {"reply": reply_text}
                 "slots": ["10:00 AM", "11:00 AM", "2:00 PM", "4:00 PM"]
             }
             doctors_list.append(format_doctor_row(doctor_dict))
+
         sess["data"]["choices"] = rows
         sess["state"] = "choose_doctor"
         set_session(msg.session_id, sess)
@@ -413,9 +392,11 @@ return {"reply": reply_text}
             doctor_id = int(text.strip())
         except:
             return {"reply": "Please type the numeric doctor ID from the list."}
+
         d = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
         if not d:
             return {"reply": "Doctor not found."}
+
         sess["data"]["doctor_id"] = doctor_id
         sess["state"] = "collect_name"
         set_session(msg.session_id, sess)
@@ -459,6 +440,7 @@ return {"reply": reply_text}
                 pref_date = date.fromisoformat(text.strip())
         except:
             return {"reply": "Invalid date. Reply 'today', 'tomorrow', or YYYY-MM-DD."}
+
         sess["data"]["preferred_date"] = pref_date
         sess["state"] = "collect_slot"
         set_session(msg.session_id, sess)
@@ -469,6 +451,7 @@ return {"reply": reply_text}
         valid_slots = ["10:00 AM", "11:00 AM", "2:00 PM", "4:00 PM"]
         if slot not in valid_slots:
             return {"reply": f"Invalid slot. Choose one: {', '.join(valid_slots)}"}
+
         sess["data"]["slot"] = slot
         sess["state"] = "confirm"
         set_session(msg.session_id, sess)
@@ -476,30 +459,23 @@ return {"reply": reply_text}
         return {"reply": f"Confirm booking for {sess['data']['patient_name']} with Dr. {d.doctor_name} on {sess['data']['preferred_date']} at {slot}? Reply 'yes' to confirm."}
 
     if state == "confirm":
-      if ltext in ["yes", "y", "confirm"]:
-        pdata = {
-            "patient_name": sess["data"]["patient_name"],
-            "age": sess["data"]["age"],
-            "gender": sess["data"]["gender"],
-            "residence": sess["data"]["residence"]
-        }
-        doctor_id = sess["data"]["doctor_id"]
-        pref_date = sess["data"]["preferred_date"]
-        slot = sess["data"]["slot"]
-        try:
-            with db.begin():
-                new_patient, token, _, _ = book_for_doctor(
-                    db, doctor_id, pdata, preferred_date=pref_date
-                )
-                # DO NOT overwrite token; use the one returned by book_for_doctor
-            clear_session(msg.session_id)
-            d = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
-            return {"reply": f"✅ Booking confirmed for Dr. {d.doctor_name} at {slot} on {pref_date}. Token: {token}. Please arrive 5-10 minutes early."}
-        except Exception as e:
-            sess["state"] = "start"
-            set_session(msg.session_id, sess)
-            return {"reply": f"Booking failed: {str(e)}"}
-
-
-    clear_session(msg.session_id)
-    return {"reply": "I didn't understand that. Please type specialization, doctor name, or your symptom."}
+        if ltext in ["yes", "y", "confirm"]:
+            pdata = {
+                "patient_name": sess["data"]["patient_name"],
+                "age": sess["data"]["age"],
+                "gender": sess["data"]["gender"],
+                "residence": sess["data"]["residence"]
+            }
+            doctor_id = sess["data"]["doctor_id"]
+            pref_date = sess["data"]["preferred_date"]
+            slot = sess["data"]["slot"]
+            try:
+                with db.begin():
+                    new_patient, token, _, _ = book_for_doctor(
+                        db, doctor_id, pdata, preferred_date=pref_date
+                    )
+                clear_session(msg.session_id)
+                d = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
+                return {"reply": f"✅ Booking confirmed for Dr. {d.doctor_name} at {slot} on {pref_date}. Token: {token}. Please arrive 5-10 minutes early."}
+            except Exception as e:
+                sess
