@@ -640,3 +640,8 @@ What brings you here today?
             return chat_endpoint(msg, db)  # Recursive call to handle detected specialization
         
         return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms (like 'toothache', 'headache', 'heart problem')\n• Mentioning a specialization (like 'Cardiologist', 'Dentist')\n• Typing 'help' for guidance\n• Typing 'show doctors' to see all available doctors"}
+
+    except Exception as e:
+        # Log error and clear session
+        clear_session(msg.session_id)
+        return {"reply": f"❌ System error occurred: {str(e)}\n\nPlease try again or contact support if the problem persists."}
