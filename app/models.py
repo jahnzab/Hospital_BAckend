@@ -27,19 +27,31 @@ class Doctors(Base):
     gender = Column(String(10))
     department = relationship("Administration_Table")
 
+# class Patients(Base):
+#     __tablename__ = "patients"
+#     patient_id = Column(Integer, primary_key=True)
+#     patient_name = Column(String(100), nullable=False)
+#     gender = Column(String(10))
+#     age = Column(Integer)
+#     residence = Column(Text)
+#     doctor_id = Column(Integer, ForeignKey("doctors.doctor_id"))
+#     booking_time = Column(DateTime, default=datetime.utcnow)
+#     appointment_time = Column(DateTime)
+#     token_id = Column(String(100), unique=True)
+#     status = Column(String(20), default="booked")  # booked | cancelled | completed | missed
 class Patients(Base):
     __tablename__ = "patients"
     patient_id = Column(Integer, primary_key=True)
     patient_name = Column(String(100), nullable=False)
     gender = Column(String(10))
     age = Column(Integer)
+    phone = Column(String(15))  # ✅ Added phone number
     residence = Column(Text)
     doctor_id = Column(Integer, ForeignKey("doctors.doctor_id"))
     booking_time = Column(DateTime, default=datetime.utcnow)
     appointment_time = Column(DateTime)
     token_id = Column(String(100), unique=True)
     status = Column(String(20), default="booked")  # booked | cancelled | completed | missed
-
 class Availability_of_Doctors(Base):
     __tablename__ = "availability_of_doctors"
     availability_id = Column(Integer, primary_key=True)
