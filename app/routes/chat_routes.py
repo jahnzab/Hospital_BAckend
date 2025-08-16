@@ -268,11 +268,12 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
         if state == "cancel_init":
             token = text.strip().upper()
             try:
-                with db.begin():
-                    result = cancel_appointment(db, token_or_id=token)
+                result = cancel_appointment(db, token_or_id=token)
+                db.commit()
                 clear_session(msg.session_id)
                 return {"reply": f"✅ Appointment {token} cancelled successfully! You'll receive a confirmation message shortly."}
             except Exception as e:
+                db.rollback()
                 sess["state"] = "cancel_init"
                 set_session(msg.session_id, sess)
                 return {"reply": f"❌ Cancellation failed: {str(e)}\n\nPlease check your token format (DOC1-YYYYMMDD-XXXX-XXX) and try again."}
@@ -510,27 +511,35 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     # Generate unique token before booking
                     unique_token = generate_unique_token(db, doctor_id, pref_date)
                     
-                    with db.begin():
-                        # Try with preferred_time first, fallback to without it
-                        try:
+                    # Remove db.begin() since the session already has a transaction
+                    # Try with preferred_time first, fallback to without it
+                    try:
+                        new_patient, token, appointment, _ = book_for_doctor(
+                            db, doctor_id, patient_data, preferred_date=pref_date, 
+                            preferred_time=slot, custom_token=unique_token
+                        )
+                        # Commit the transaction
+                        db.commit()
+                    except TypeError as e:
+                        db.rollback()  # Rollback on error
+                        if "preferred_time" in str(e):
+                            # If preferred_time is not supported, book without it
                             new_patient, token, appointment, _ = book_for_doctor(
-                                db, doctor_id, patient_data, preferred_date=pref_date, 
-                                preferred_time=slot, custom_token=unique_token
+                                db, doctor_id, patient_data, preferred_date=pref_date,
+                                custom_token=unique_token
                             )
-                        except TypeError as e:
-                            if "preferred_time" in str(e):
-                                # If preferred_time is not supported, book without it
-                                new_patient, token, appointment, _ = book_for_doctor(
-                                    db, doctor_id, patient_data, preferred_date=pref_date,
-                                    custom_token=unique_token
-                                )
-                            elif "custom_token" in str(e):
-                                # If custom_token is not supported, try original method
-                                new_patient, token, appointment, _ = book_for_doctor(
-                                    db, doctor_id, patient_data, preferred_date=pref_date
-                                )
-                            else:
-                                raise e
+                            db.commit()
+                        elif "custom_token" in str(e):
+                            # If custom_token is not supported, try original method
+                            new_patient, token, appointment, _ = book_for_doctor(
+                                db, doctor_id, patient_data, preferred_date=pref_date
+                            )
+                            db.commit()
+                        else:
+                            raise e
+                    except Exception as e:
+                        db.rollback()  # Rollback on any other error
+                        raise e
                     
                     clear_session(msg.session_id)
                     
@@ -563,10 +572,10 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                             timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
                             fallback_token = f"BK{doctor_id}-{timestamp}-{random.randint(1000, 9999)}"
                             
-                            with db.begin():
-                                new_patient, token, appointment, _ = book_for_doctor(
-                                    db, doctor_id, patient_data, preferred_date=pref_date
-                                )
+                            new_patient, token, appointment, _ = book_for_doctor(
+                                db, doctor_id, patient_data, preferred_date=pref_date
+                            )
+                            db.commit()
                             
                             clear_session(msg.session_id)
                             return {"reply": f"""
