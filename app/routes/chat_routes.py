@@ -219,7 +219,7 @@
 #     clear_session(msg.session_id)
 #     return {"reply": "Session reset. Please type which specialization or doctor you want to book."}
 
-
+from datetime import datetime, timedelta, time
 from fastapi import APIRouter, Depends
 from ..schemas import ChatMessage
 from ..services.session_store import get_session, set_session, clear_session
@@ -309,24 +309,69 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 
     # ===== LIST DOCTORS =====
     if "list doctor" in ltext or "show doctor" in ltext:
-        today = date.today()
-        rows = db.query(Availability_of_Doctors).join(Doctors).filter(
-            Availability_of_Doctors.date == today
-        ).all()
-        if not rows:
-            return {"reply": "No doctors available today."}
-        doctors_list = []
-        for r in rows:
-            doctor_dict = {
-                "doctor_id": r.doctor_id,
-                "doctor_name": r.doctor.doctor_name,
-                "specialization": r.doctor.specialization,
-                "room": r.room_number,
-                "slots": ["10:00 AM", "11:00 AM", "2:00 PM", "4:00 PM"]
-            }
-            doctors_list.append(format_doctor_row(doctor_dict))
-        return {"reply": "Here are the available doctors:\n" + "\n".join(doctors_list)}
+         today = date.today()
+         future_days = 7  # show next 7 days, adjust as needed
 
+         # Map common symptoms to specializations
+         symptom_map = {
+    "heart": "Cardiologist",
+    "headache": "Neurologist",
+    "skin": "Dermatologist",
+    "ear": "ENT Specialist",
+    "eye": "Ophthalmologist",
+    # add more mappings as needed
+          }
+
+         query_specialization = text.strip()
+         for keyword, spec in symptom_map.items():
+            if keyword in text.lower():
+               query_specialization = spec
+               break
+
+         # Fetch doctors from today onward
+         rows = (
+          db.query(Availability_of_Doctors)
+           .join(Doctors)
+           .filter(
+           Availability_of_Doctors.date >= today,
+           Availability_of_Doctors.specialization.ilike(f"%{query_specialization}%")
+         )
+         .order_by(Availability_of_Doctors.date)
+         .all()
+)
+
+         if not rows:
+          return {"reply": f"No doctors found for '{query_specialization}'. Try another specialization or symptom."}
+
+# Build doctor list with date & slots
+doctor_dict = {}
+for r in rows:
+    key = r.doctor_id
+    if key not in doctor_dict:
+        doctor_dict[key] = {
+            "doctor_name": r.doctor.doctor_name,
+            "specialization": r.doctor.specialization,
+            "room": r.room_number,
+            "dates": {}
+        }
+    # Generate slots from 10:00 AM to 5:00 PM with 10 min interval
+    slot_list = []
+    start_time = datetime.combine(r.date, time(10, 0))
+    end_time = datetime.combine(r.date, time(17, 0))
+    while start_time <= end_time:
+        slot_list.append(start_time.strftime("%I:%M %p"))
+        start_time += timedelta(minutes=10)
+    doctor_dict[key]["dates"][r.date.isoformat()] = slot_list
+
+# Prepare readable reply: one doctor per row
+choices = []
+for d_id, info in doctor_dict.items():
+    for d_date, slots in info["dates"].items():
+        slot_str = ", ".join(slots)
+        choices.append(f"- {info['doctor_name']} ({info['specialization']}) | Room {info['room']} | Date: {d_date} | ID: {d_id} | Slots: {slot_str}")
+
+reply_text = f"Based on your input, here are the available doctors:\n" + "\n".join(choices)
+return {"reply": reply_text}
     # ===== BOOKING FLOW =====
     if state == "start":
         sess["state"] = "choose_specialization"
