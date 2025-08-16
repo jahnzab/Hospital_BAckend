@@ -216,6 +216,7 @@
 #             return {"reply": "Booking cancelled. Start again to book another slot."}
 
 #     # ===== FALLBACK =====
+
 from datetime import datetime, timedelta, date, time
 from fastapi import APIRouter, Depends, HTTPException
 from ..schemas import ChatMessage
@@ -312,8 +313,6 @@ def get_available_doctors(db: Session, specialization: str, days_ahead: int = 15
         return {}
     
     doctor_dict = {}
-    now = datetime.now()
-    min_advance_time = timedelta(minutes=30)  # Minimum 30 minutes advance booking
     
     for row in rows:
         key = row.doctor_id
@@ -325,7 +324,7 @@ def get_available_doctors(db: Session, specialization: str, days_ahead: int = 15
                 "dates": {}
             }
         
-        # Generate time slots
+        # Generate all possible time slots for this date (filtering will be done later)
         start_dt = datetime.combine(row.date, row.start_time or time(9, 0))
         end_dt = datetime.combine(row.date, row.end_time or time(17, 0))
         
@@ -333,18 +332,38 @@ def get_available_doctors(db: Session, specialization: str, days_ahead: int = 15
         current_slot = start_dt
         
         while current_slot <= end_dt:
-            # Only show slots that are at least 30 minutes in the future
-            if current_slot >= now + min_advance_time:
-                slot_list.append(current_slot.strftime("%I:%M %p"))
+            slot_list.append(current_slot.strftime("%I:%M %p"))
             current_slot += timedelta(minutes=10)
         
-        if slot_list:  # Only add dates with available slots
+        if slot_list:  # Add all slots (will filter when user selects date)
             doctor_dict[key]["dates"][row.date.isoformat()] = slot_list
     
-    # Remove doctors with no available slots
-    doctor_dict = {k: v for k, v in doctor_dict.items() if any(v["dates"].values())}
-    
     return doctor_dict
+
+def filter_slots_by_time(slots: List[str], selected_date: date, min_advance_minutes: int = 30) -> List[str]:
+    """Filter slots based on current time for today's appointments"""
+    if selected_date != date.today():
+        # For future dates, return all slots
+        return slots
+    
+    # For today, filter based on current time
+    now = datetime.now()
+    min_advance_time = now + timedelta(minutes=min_advance_minutes)
+    
+    available_slots = []
+    for slot_str in slots:
+        try:
+            # Parse the slot time (e.g., "02:30 PM")
+            slot_time = datetime.strptime(slot_str, "%I:%M %p").time()
+            slot_datetime = datetime.combine(selected_date, slot_time)
+            
+            # Only include slots that are at least 30 minutes from now
+            if slot_datetime >= min_advance_time:
+                available_slots.append(slot_str)
+        except ValueError:
+            continue  # Skip invalid time formats
+    
+    return available_slots
 
 def validate_phone_number(phone: str) -> bool:
     """Validate phone number format"""
@@ -597,6 +616,13 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             set_session(msg.session_id, sess)
 
             formatted_date = pref_date.strftime("%A, %B %d, %Y")
+            current_time = datetime.now().strftime("%I:%M %p")
+            
+            # Show helpful message if it's today and slots might seem old
+            time_note = ""
+            if pref_date == date.today():
+                time_note = f"\n⏰ Current time: {current_time} - Only showing future slots"
+            
             slots_display = []
             for i, slot in enumerate(available_slots):
                 if i < 12:  # Show first 12 slots
@@ -605,7 +631,8 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     slots_display.append("...")
                     break
             
-            return {"reply": f"⏰ Available slots for {formatted_date}:\n\n{', '.join(slots_display)}\n\n👉 Type your preferred time (e.g., 10:00 AM):"}
+            return {"reply": f"⏰ Available slots for {formatted_date}:{time_note}\n\n{', '.join(slots_display)}\n\n👉 Type your preferred time (e.g., 10:00 AM):"}
+
 
         if state == "collect_slot":
             slot = text.strip()
@@ -659,9 +686,16 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                     doctor_name = sess["data"]["choices"][doctor_id]["doctor_name"]
                     
                     with db.begin():
-                        new_patient, token, appointment, _ = book_for_doctor(
-                            db, doctor_id, patient_data, preferred_date=pref_date, preferred_time=slot
-                        )
+                        # Try with preferred_time first, fallback to without it
+                        try:
+                            new_patient, token, appointment, _ = book_for_doctor(
+                                db, doctor_id, patient_data, preferred_date=pref_date, preferred_time=slot
+                            )
+                        except TypeError:
+                            # If preferred_time is not supported, book without it
+                            new_patient, token, appointment, _ = book_for_doctor(
+                                db, doctor_id, patient_data, preferred_date=pref_date
+                            )
                     
                     clear_session(msg.session_id)
                     
@@ -693,7 +727,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                 clear_session(msg.session_id)
                 return {"reply": "❌ Booking cancelled. Feel free to start over anytime!"}
             else:
-                return {"reply": "❌ Please type 'YES' to confirm or 'NO' to cancel."}
+                return {"reply": "❌ Please type 'YES' or 'yes' to confirm, or 'NO' to cancel."}
 
         # ===== START STATE =====
         if state == "start":
