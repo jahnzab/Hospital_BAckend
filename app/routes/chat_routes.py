@@ -1,13 +1,5 @@
-
 from datetime import datetime, timedelta, date, time
 from typing import Optional
-
-def parse_date_input(date_str: str) -> Optional[date]:
-    try:
-        return date.fromisoformat(date_str)
-    except ValueError:
-        return None
-# def parse_date_input(date_str: str) -> Optional[date]:from datetime import datetime, timedelta, date, time
 from fastapi import APIRouter, Depends, HTTPException
 from ..schemas import ChatMessage
 from ..services.session_store import get_session, set_session, clear_session
@@ -29,12 +21,12 @@ def get_db():
     finally:
         db.close()
 
-# Enhanced symptom mapping with multiple keywords per specialization
+# Enhanced symptom mapping with dental and tooth issues added
 SYMPTOM_MAP = {
     "Cardiologist": ["heart", "cardio", "chest pain", "heart attack", "cardiac", "coronary", "blood pressure", "hypertension", "palpitation"],
     "Pulmonologist": ["lung", "breathing", "cough", "asthma", "pneumonia", "respiratory", "shortness of breath", "chest congestion"],
     "Oncologist": ["cancer", "tumor", "oncology", "chemotherapy", "radiation", "malignant", "benign", "biopsy"],
-    "Dermatologist": ["skin", "rash", "acne", "eczema", "psoriasis", "dermatology", "mole", "pigmentation", "allergy"],
+    "Dermatologist": ["skin", "rash", "acne", "eczema", "psoriasis", "dermatology", "mole", "pigmentation", "allergy", "skin rash", "rashes"],
     "Neurologist": ["headache", "migraine", "brain", "nerve", "neurological", "seizure", "epilepsy", "stroke", "memory", "dizziness"],
     "ENT Specialist": ["ear", "nose", "throat", "ent", "hearing", "sinus", "tonsil", "voice", "swallowing", "nasal"],
     "Ophthalmologist": ["eye", "vision", "sight", "cataract", "glaucoma", "retina", "blind", "glasses", "contact lens"],
@@ -43,6 +35,7 @@ SYMPTOM_MAP = {
     "Pediatrician": ["child", "baby", "infant", "pediatric", "vaccination", "growth", "development", "fever in child"],
     "Psychiatrist": ["mental", "depression", "anxiety", "stress", "psychiatric", "mood", "behavior", "therapy"],
     "Urologist": ["kidney", "bladder", "urinary", "prostate", "urology", "stone", "infection", "incontinence"],
+    "Dentist": ["tooth", "teeth", "toothache", "dental", "gum", "cavity", "root canal", "wisdom tooth", "jaw pain", "mouth pain"],
     "General Physician": ["fever", "cold", "flu", "general", "routine checkup", "body pain", "weakness", "fatigue"]
 }
 
@@ -59,8 +52,42 @@ SPECIALIZATION_ALIASES = {
     "kidney doctor": "Urologist",
     "brain doctor": "Neurologist",
     "lung doctor": "Pulmonologist",
-    "cancer doctor": "Oncologist"
+    "cancer doctor": "Oncologist",
+    "dentist": "Dentist",
+    "tooth doctor": "Dentist",
+    "dental doctor": "Dentist"
 }
+
+def parse_date_input(date_str: str) -> Optional[date]:
+    """Parse various date input formats - FIXED VERSION"""
+    date_str = date_str.lower().strip()
+    
+    # Handle natural language dates first
+    if date_str in ["today", "tod"]:
+        return date.today()
+    elif date_str in ["tomorrow", "tom", "tmrw"]:
+        return date.today() + timedelta(days=1)
+    
+    # Try different date formats
+    date_formats = [
+        "%Y-%m-%d",  # 2025-08-16
+        "%d-%m-%Y",  # 16-08-2025
+        "%d/%m/%Y",  # 16/08/2025
+        "%d %m %Y",  # 16 08 2025
+        "%m-%d-%Y",  # 08-16-2025 (US format)
+        "%m/%d/%Y",  # 08/16/2025 (US format)
+    ]
+    
+    for fmt in date_formats:
+        try:
+            parsed_date = datetime.strptime(date_str, fmt).date()
+            # Validate that the date makes sense
+            if parsed_date.year >= 2025 and parsed_date.year <= 2030:
+                return parsed_date
+        except ValueError:
+            continue
+    
+    return None
 
 def find_specialization_by_symptom(text: str) -> Optional[str]:
     """Find specialization based on symptoms or keywords in text"""
@@ -186,29 +213,6 @@ def generate_unique_token(db: Session, doctor_id: int, appointment_date: date, m
     # Fallback with timestamp if all attempts fail
     timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
     return f"DOC{doctor_id}-{timestamp}-{random.randint(100, 999)}"
-    """Parse various date input formats"""
-    date_str = date_str.lower().strip()
-    
-    if date_str in ["today", "tod"]:
-        return date.today()
-    elif date_str in ["tomorrow", "tom", "tmrw"]:
-        return date.today() + timedelta(days=1)
-    
-    # Try different date formats
-    date_formats = [
-        "%Y-%m-%d",  # 2024-12-25
-        "%d-%m-%Y",  # 25-12-2024
-        "%d/%m/%Y",  # 25/12/2024
-        "%d %m %Y",  # 25 12 2024
-    ]
-    
-    for fmt in date_formats:
-        try:
-            return datetime.strptime(date_str, fmt).date()
-        except ValueError:
-            continue
-    
-    return None
 
 @router.post("/")
 def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
@@ -229,8 +233,8 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 🏥 Hospital Booking System Help:
 
 📋 Available Commands:
-• Say your symptoms (e.g., "heart problem", "headache", "eye issue")
-• Mention specialization (e.g., "Cardiologist", "ENT", "Dermatologist")
+• Say your symptoms (e.g., "heart problem", "headache", "eye issue", "toothache")
+• Mention specialization (e.g., "Cardiologist", "ENT", "Dermatologist", "Dentist")
 • "show doctors" - View all available doctors
 • "cancel booking" - Cancel existing appointment
 • "my appointments" - View your bookings
@@ -244,6 +248,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 • Orthopedic (bone, joint problems)
 • Gynecologist (women's health)
 • Pediatrician (child healthcare)
+• Dentist (tooth and gum problems)
 • General Physician (general health)
 
 💡 Tips:
@@ -402,13 +407,13 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             sess["data"]["residence"] = residence
             sess["state"] = "collect_date"
             set_session(msg.session_id, sess)
-            return {"reply": "📅 Preferred date?\n\n👉 Type: 'today' / 'tomorrow' / 'DD-MM-YYYY'"}
+            return {"reply": "📅 Preferred date?\n\n👉 Type: 'today' / 'tomorrow' / 'DD-MM-YYYY'\n\n💡 Examples: today, tomorrow, 16-08-2025"}
 
         if state == "collect_date":
             pref_date = parse_date_input(text)
             
             if not pref_date:
-                return {"reply": "❌ Invalid date format.\n\n👉 Try: 'today', 'tomorrow', or 'DD-MM-YYYY' (e.g., 25-12-2024)"}
+                return {"reply": "❌ Invalid date format.\n\n👉 Try: 'today', 'tomorrow', or 'DD-MM-YYYY' (e.g., 25-12-2024)\n\n💡 Make sure to use the correct format!"}
             
             if pref_date < date.today():
                 return {"reply": "❌ Cannot book appointments for past dates. Please select today or a future date."}
@@ -419,12 +424,17 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             doctor_id = sess["data"]["doctor_id"]
             available_slots = sess["data"]["choices"][doctor_id]["dates"].get(pref_date.isoformat(), [])
             
+            # Filter slots based on current time if it's today
+            if pref_date == date.today():
+                available_slots = filter_slots_by_time(available_slots, pref_date)
+            
             if not available_slots:
                 available_dates = list(sess["data"]["choices"][doctor_id]["dates"].keys())
                 formatted_dates = [datetime.strptime(d, "%Y-%m-%d").strftime("%d-%m-%Y") for d in available_dates]
                 return {"reply": f"❌ No slots available on {pref_date.strftime('%d-%m-%Y')}.\n\n📅 Available dates: {', '.join(formatted_dates)}"}
 
             sess["data"]["preferred_date"] = pref_date
+            sess["data"]["filtered_slots"] = available_slots  # Store filtered slots
             sess["state"] = "collect_slot"
             set_session(msg.session_id, sess)
 
@@ -446,12 +456,11 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
             
             return {"reply": f"⏰ Available slots for {formatted_date}:{time_note}\n\n{', '.join(slots_display)}\n\n👉 Type your preferred time (e.g., 10:00 AM):"}
 
-
         if state == "collect_slot":
             slot = text.strip()
             doctor_id = sess["data"]["doctor_id"]
             pref_date = sess["data"]["preferred_date"]
-            available_slots = sess["data"]["choices"][doctor_id]["dates"].get(pref_date.isoformat(), [])
+            available_slots = sess["data"].get("filtered_slots", [])
             
             if slot not in available_slots:
                 return {"reply": f"❌ Invalid slot.\n\n⏰ Available slots: {', '.join(available_slots[:10])}\n\n👉 Please copy and paste exactly."}
@@ -605,11 +614,14 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
 • "Headache issue"
 • "Eye pain"
 • "Skin rash"
+• "Toothache"
+• "Dental problem"
 
 👉 Or mention specialization:
 • "Cardiologist"
 • "ENT Specialist"
 • "Dermatologist"
+• "Dentist"
 
 👉 Other options:
 • "show doctors" - View all doctors
@@ -627,9 +639,4 @@ What brings you here today?
             set_session(msg.session_id, sess)
             return chat_endpoint(msg, db)  # Recursive call to handle detected specialization
         
-        return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms\n• Mentioning a specialization\n• Typing 'help' for guidance\n• Typing 'show doctors' to see all available doctors"}
-
-    except Exception as e:
-        # Log error and clear session
-        clear_session(msg.session_id)
-        return {"reply": f"❌ System error occurred: {str(e)}\n\nPlease try again or contact support if the problem persists."}
+        return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms (like 'toothache
