@@ -26,25 +26,7 @@ def get_db():
         yield db
     finally:
         db.close()
-# def get_doctor_booking_count(db: Session, doctor_id: int, on_date: date) -> int:
-#     count = db.query(func.count(Patients.patient_id)).filter(
-#         func.date(Patients.appointment_time) == on_date,
-#         Patients.doctor_id == doctor_id,
-#         Patients.status == 'booked'
-#     ).scalar()
-#     return count or 0
 
-# def suggest_alternative_doctors(db: Session, specialization: str, exclude_doctor_id: int, on_date: date) -> List[Doctors]:
-#     doctors = db.query(Doctors).join(Availability_of_Doctors).filter(
-#         Doctors.specialization.ilike(f"%{specialization}%"),
-#         Doctors.doctor_id != exclude_doctor_id,
-#         Availability_of_Doctors.date == on_date
-#     ).all()
-
-#     alternatives = []
-#     for doc in doctors:
-#         bookings = get_doctor_booking_count(db, doc.doctor_id, on_date)
-#         if bookings < MAX_DAILY_BOOKINGS:
 def get_doctor_booking_count(db: Session, doctor_id: int, on_date: date) -> int:
     count = db.query(func.count(Patients.patient_id)).filter(
         func.date(Patients.appointment_time) == on_date,
@@ -189,37 +171,3 @@ def reschedule(
     except Exception as e:
         db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
-# @router.post("/reschedule")
-# def reschedule(old_token: str, new_doctor_id: Optional[int] = None, new_date: Optional[str] = None, db: Session = Depends(get_db)):
-#     """
-#     Reschedule: cancel old appointment and try to book new one (same patient details).
-#     new_date should be 'YYYY-MM-DD' or omitted to use next available.
-#     """
-#     try:
-#         with db.begin():
-#             appt = db.query(__import__("..models", fromlist=["Patients"]).Patients).filter(__import__("..models", fromlist=["Patients"]).Patients.token_id == old_token).first()
-#             if not appt:
-#                 raise Exception("Old appointment not found")
-#             # gather patient info
-#             pdata = {
-#                 "patient_name": appt.patient_name,
-#                 "gender": appt.gender,
-#                 "age": appt.age,
-#                 "residence": appt.residence
-#             }
-#             # cancel old appointment
-#             from ..services.appointment_service import cancel_appointment
-#             cancel_appointment(db, token_or_id=old_token)
-#             # decide target doctor
-#             target_doc = new_doctor_id or appt.doctor_id
-#             pref_date = None
-#             if new_date:
-#                 from datetime import date
-#                 pref_date = date.fromisoformat(new_date)
-#             # try booking
-#             new_patient, token, appt_time, room = book_for_doctor(db, target_doc, pdata, preferred_date=pref_date)
-#             db.commit()
-#     except Exception as e:
-#         db.rollback()
-#         raise HTTPException(status_code=400, detail=str(e))
-#     return {"message": "Rescheduled", "new_token": token, "appointment_time": appt_time.isoformat(), "doctor_id": target_doc}
