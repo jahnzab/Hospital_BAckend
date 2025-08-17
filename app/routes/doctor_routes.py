@@ -1,5 +1,5 @@
 
-
+from collections import defaultdict
 from fastapi import APIRouter, Depends, HTTPException, Header
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -64,28 +64,6 @@ def get_doctor_profile(db: Session = Depends(get_db), user=Depends(require_user)
     }
 
     return profile_data
-# @router.get("/profile")
-# def get_doctor_profile(db: Session = Depends(get_db), user=Depends(require_user)):
-#     if user.get("role") != "Doctor":
-#         raise HTTPException(status_code=403, detail="Only doctors can access this resource")
-
-#     doctor_id = user.get("doctor_id")
-#     doctor = db.query(Doctors).filter(Doctors.doctor_id == doctor_id).first()
-#     if not doctor:
-#         raise HTTPException(status_code=404, detail="Doctor not found")
-
-#     # Get the latest availability for this doctor (by date descending)
-#     latest_avail = db.query(Availability_of_Doctors).filter(
-#         Availability_of_Doctors.doctor_id == doctor_id
-#     ).order_by(desc(Availability_of_Doctors.date)).first()
-
-#     # Prepare response
-#     profile_data = {
-#         "doctor_id": doctor.doctor_id,
-#         "name": doctor.doctor_name,
-#         "specialization": latest_avail.specialization if latest_avail else None,
-#         "room_number": latest_avail.room_number if latest_avail else None,
-#     }
 
 #     return profile_data
 # =========================
@@ -176,33 +154,40 @@ from datetime import datetime, timedelta
 #             status=p.status
 #         ) for p in rows
 #     ]
-@router.get("/patients_today", response_model=List[PatientItem])
+
+@router.get("/patients_today", response_model=Dict[str, List[PatientItem]])
 def patients_today(db: Session = Depends(get_db), user=Depends(require_user)):
+    """
+    Returns all patients for the logged-in doctor,
+    grouped by date and sorted by appointment time.
+    """
     if user.get("role") != "Doctor":
         raise HTTPException(status_code=403, detail="Only doctors can view this")
+
     doc_id = user.get("doctor_id")
-    today = date.today()
-    start = datetime.combine(today, datetime.min.time())  # today 00:00:00
-    end = datetime.combine(today, datetime.max.time())    # today 23:59:59.999999
 
     rows = db.query(Patients).filter(
-    Patients.doctor_id == doc_id,
-    Patients.appointment_time >= datetime.now()
-).order_by(Patients.appointment_time).all()
+        Patients.doctor_id == doc_id
+    ).order_by(Patients.appointment_time.asc()).all()
 
+    grouped = defaultdict(list)
+    for p in rows:
+        date_key = p.appointment_time.date().isoformat()  # e.g. "2025-08-17"
+        grouped[date_key].append(
+            PatientItem(
+                patient_id=p.patient_id,
+                patient_name=p.patient_name,
+                gender=p.gender,
+                age=p.age,
+                residence=p.residence,
+                appointment_time=p.appointment_time,
+                token_id=p.token_id,
+                status=p.status
+            )
+        )
 
-    return [
-        PatientItem(
-            patient_id=p.patient_id,
-            patient_name=p.patient_name,
-            gender=p.gender,
-            age=p.age,
-            residence=p.residence,
-            appointment_time=p.appointment_time,
-            token_id=p.token_id,
-            status=p.status
-        ) for p in rows
-    ]
+    return grouped
+
 
 # =========================
 # Search Patients
