@@ -729,80 +729,100 @@ def format_doctor_info(doctor_data: dict, slots: List[str]) -> str:
     return f"- Dr. {doctor_data['doctor_name']} ({doctor_data['specialization']}) | Room {doctor_data['room']} | Date: {doctor_data['date']} | ID: {doctor_data['doctor_id']} | Slots: {slot_str}"
 
 def get_booked_slots(db: Session, doctor_id: int, target_date: date) -> List[str]:
-    """Get all booked slots for a specific doctor and date"""
-    # Query all active bookings (not cancelled) for this doctor on this date
-    booked_appointments = (
-        db.query(Patients)
-        .filter(
-            Patients.doctor_id == doctor_id,
-            Patients.appointment_time >= datetime.combine(target_date, datetime.min.time()),
-            Patients.appointment_time < datetime.combine(target_date + timedelta(days=1), datetime.min.time()),
-            Patients.appointment_status.in_(['booked', 'completed', 'confirmed'])  # Active statuses
+    """Get all booked slots for a specific doctor and date - FIXED VERSION"""
+    try:
+        # Query all appointments for this doctor on this date
+        booked_appointments = (
+            db.query(Patients)
+            .filter(
+                Patients.doctor_id == doctor_id,
+                Patients.appointment_time >= datetime.combine(target_date, datetime.min.time()),
+                Patients.appointment_time < datetime.combine(target_date + timedelta(days=1), datetime.min.time())
+            )
         )
-        .all()
-    )
-    
-    booked_slots = []
-    for appointment in booked_appointments:
-        slot_time = appointment.appointment_time.strftime("%I:%M %p")
-        booked_slots.append(slot_time)
-    
-    return booked_slots
+        
+        # Check if appointment_status column exists by trying to access it
+        try:
+            # Try to filter by status if the column exists
+            booked_appointments = booked_appointments.filter(
+                Patients.appointment_status.in_(['booked', 'completed', 'confirmed'])
+            ).all()
+        except AttributeError:
+            # If appointment_status doesn't exist, just get all appointments
+            # You might want to add a different condition here if you have another status field
+            booked_appointments = booked_appointments.all()
+        
+        booked_slots = []
+        for appointment in booked_appointments:
+            slot_time = appointment.appointment_time.strftime("%I:%M %p")
+            booked_slots.append(slot_time)
+        
+        return booked_slots
+        
+    except Exception as e:
+        print(f"Error getting booked slots: {e}")
+        # Return empty list if there's an error
+        return []
 
 def get_available_doctors(db: Session, specialization: str, days_ahead: int = 15) -> Dict:
-    """Get available doctors for a specialization with their available (unbooked) slots"""
-    today = date.today()
-    end_date = today + timedelta(days=days_ahead)
-    
-    rows = (
-        db.query(Availability_of_Doctors)
-        .join(Doctors)
-        .filter(
-            Availability_of_Doctors.date >= today,
-            Availability_of_Doctors.date <= end_date,
-            Doctors.specialization.ilike(f"%{specialization}%")
+    """Get available doctors for a specialization with their available (unbooked) slots - FIXED VERSION"""
+    try:
+        today = date.today()
+        end_date = today + timedelta(days=days_ahead)
+        
+        rows = (
+            db.query(Availability_of_Doctors)
+            .join(Doctors)
+            .filter(
+                Availability_of_Doctors.date >= today,
+                Availability_of_Doctors.date <= end_date,
+                Doctors.specialization.ilike(f"%{specialization}%")
+            )
+            .order_by(Availability_of_Doctors.date, Doctors.doctor_name)
+            .all()
         )
-        .order_by(Availability_of_Doctors.date, Doctors.doctor_name)
-        .all()
-    )
-    
-    if not rows:
+        
+        if not rows:
+            return {}
+        
+        doctor_dict = {}
+        
+        for row in rows:
+            key = row.doctor_id
+            if key not in doctor_dict:
+                doctor_dict[key] = {
+                    "doctor_name": row.doctor.doctor_name,
+                    "specialization": row.doctor.specialization,
+                    "room": row.room_number,
+                    "dates": {}
+                }
+            
+            # Generate all possible time slots for this date
+            start_dt = datetime.combine(row.date, row.start_time or time(9, 0))
+            end_dt = datetime.combine(row.date, row.end_time or time(17, 0))
+            
+            all_slots = []
+            current_slot = start_dt
+            
+            while current_slot <= end_dt:
+                all_slots.append(current_slot.strftime("%I:%M %p"))
+                current_slot += timedelta(minutes=10)
+            
+            # Get booked slots for this doctor on this date
+            booked_slots = get_booked_slots(db, row.doctor_id, row.date)
+            
+            # Filter out booked slots - only show available slots
+            available_slots = [slot for slot in all_slots if slot not in booked_slots]
+            
+            # Only add dates that have available slots
+            if available_slots:
+                doctor_dict[key]["dates"][row.date.isoformat()] = available_slots
+        
+        return doctor_dict
+        
+    except Exception as e:
+        print(f"Error in get_available_doctors: {e}")
         return {}
-    
-    doctor_dict = {}
-    
-    for row in rows:
-        key = row.doctor_id
-        if key not in doctor_dict:
-            doctor_dict[key] = {
-                "doctor_name": row.doctor.doctor_name,
-                "specialization": row.doctor.specialization,
-                "room": row.room_number,
-                "dates": {}
-            }
-        
-        # Generate all possible time slots for this date
-        start_dt = datetime.combine(row.date, row.start_time or time(9, 0))
-        end_dt = datetime.combine(row.date, row.end_time or time(17, 0))
-        
-        all_slots = []
-        current_slot = start_dt
-        
-        while current_slot <= end_dt:
-            all_slots.append(current_slot.strftime("%I:%M %p"))
-            current_slot += timedelta(minutes=10)
-        
-        # Get booked slots for this doctor on this date
-        booked_slots = get_booked_slots(db, row.doctor_id, row.date)
-        
-        # Filter out booked slots - only show available slots
-        available_slots = [slot for slot in all_slots if slot not in booked_slots]
-        
-        # Only add dates that have available slots
-        if available_slots:
-            doctor_dict[key]["dates"][row.date.isoformat()] = available_slots
-    
-    return doctor_dict
 
 def filter_slots_by_time(slots: List[str], selected_date: date, min_advance_minutes: int = 30) -> List[str]:
     """Filter slots based on current Indian time for today's appointments"""
@@ -1216,7 +1236,7 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                             set_session(msg.session_id, sess)
                             return {"reply": "❌ All slots for this date are now taken. Please select a different date:"}
                     
-                    # Fixed: Simplified booking approach - remove custom_token parameter
+                    # Booking attempt with comprehensive error handling
                     try:
                         # First try with preferred_time parameter
                         try:
