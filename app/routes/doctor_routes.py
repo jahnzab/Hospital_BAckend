@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 from datetime import date
 from sqlalchemy import func
+from typing import List, Dict
 
 from ..database import SessionLocal
 from ..models import Doctors, Patients, Availability_of_Doctors
