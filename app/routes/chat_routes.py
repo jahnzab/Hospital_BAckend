@@ -608,9 +608,6 @@
 #         clear_session(msg.session_id)
 #         return {"reply": f"❌ System error occurred: {str(e)}\n\nPlease try again or contact support if the problem persists."}
 
-          
-
-
 from datetime import datetime, timedelta, date, time
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -1265,4 +1262,87 @@ def chat_endpoint(msg: ChatMessage, db: Session = Depends(get_db)):
                         
                         # Get fresh slots for retry
                         retry_dict = get_available_doctors(db, sess["data"]["specialization"])
-                        retry_slots = retry_dict.get(doctor_id, {}).get
+                        retry_slots = retry_dict.get(doctor_id, {}).get("dates", {}).get(pref_date.isoformat(), [])
+                        
+                        if pref_date == date.today():
+                            retry_slots = filter_slots_by_time(retry_slots, pref_date)
+                        
+                        sess["data"]["filtered_slots"] = retry_slots
+                        set_session(msg.session_id, sess)
+                        
+                        # Improved error handling
+                        error_msg = str(e)
+                        if "duplicate" in error_msg.lower() or "unique constraint" in error_msg.lower():
+                            if retry_slots:
+                                return {"reply": f"❌ This time slot was just booked by another patient.\n\n⏰ Available slots: {', '.join(retry_slots[:10])}\n\n👉 Please select a different time:"}
+                            else:
+                                sess["state"] = "collect_date"
+                                set_session(msg.session_id, sess)
+                                return {"reply": "❌ All slots are now taken. Please select a different date:"}
+                        elif "not available" in error_msg.lower():
+                            if retry_slots:
+                                return {"reply": f"❌ Selected time slot is no longer available.\n\n⏰ Available slots: {', '.join(retry_slots[:10])}\n\n👉 Please select a different time:"}
+                            else:
+                                sess["state"] = "collect_date"
+                                set_session(msg.session_id, sess)
+                                return {"reply": "❌ No slots available. Please select a different date:"}
+                        else:
+                            return {"reply": f"❌ Booking failed: {error_msg}\n\nPlease try selecting a different time slot."}
+                            
+                except Exception as e:
+                    sess["state"] = "collect_slot"
+                    set_session(msg.session_id, sess)
+                    return {"reply": f"❌ System error during booking: {str(e)}\n\nPlease try selecting a different time slot."}
+            
+            elif ltext in ["no", "n", "cancel"]:
+                clear_session(msg.session_id)
+                return {"reply": "❌ Booking cancelled. Feel free to start over anytime!"}
+            else:
+                return {"reply": "❌ Please type 'YES' or 'yes' to confirm, or 'NO' or 'no' to cancel."}
+
+        # ===== START STATE =====
+        if state == "start":
+            sess["state"] = "choose_specialization"
+            set_session(msg.session_id, sess)
+            
+            welcome_msg = """
+🏥 Welcome to Hospital Booking System!
+
+🩺 How can I help you today?
+
+👉 Tell me your symptoms:
+• "I have heart problem"
+• "Headache issue"
+• "Eye pain"
+• "Skin rash"
+• "Toothache"
+• "Dental problem"
+
+👉 Or mention specialization:
+• "Cardiologist"
+• "ENT Specialist"
+• "Dermatologist"
+• "Dentist"
+
+👉 Other options:
+• "show doctors" - View all doctors
+• "help" - Get detailed guide
+
+What brings you here today?
+            """
+            return {"reply": welcome_msg}
+
+        # ===== DEFAULT FALLBACK =====
+        # Try to detect specialization one more time
+        detected_spec = find_specialization_by_symptom(text)
+        if detected_spec:
+            sess["state"] = "start"  # Reset and let it be handled in next iteration
+            set_session(msg.session_id, sess)
+            return chat_endpoint(msg, db)  # Recursive call to handle detected specialization
+        
+        return {"reply": "❌ I didn't understand that.\n\n💡 Try:\n• Describing your symptoms (like 'toothache', 'headache', 'heart problem')\n• Mentioning a specialization (like 'Cardiologist', 'Dentist')\n• Typing 'help' for guidance\n• Typing 'show doctors' to see all available doctors"}
+
+    except Exception as e:
+        # Log error and clear session
+        clear_session(msg.session_id)
+        return {"reply": f"❌ System error occurred: {str(e)}\n\nPlease try again or contact support if the problem persists."}
