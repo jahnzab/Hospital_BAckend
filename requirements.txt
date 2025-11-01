@@ -14,4 +14,4 @@ langchain-core
 sqlalchemy
 langchain-google-genai
 pytz
-
+supabase
