@@ -1,6 +1,6 @@
 import os
 
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://smhs_hospital_user:SewkhYXd6Lb7VYpjb6OB8UUXUQR1XGoX@dpg-d2aobp2dbo4c73a2v5gg-a.oregon-postgres.render.com:5432/smhs_hospital")
+DATABASE_URL = "postgresql://postgres:postgres%40%23123@db.ntkvbtujktwgkomrvvwz.supabase.co:5432/postgres"
 
 JWT_SECRET = os.environ.get("JWT_SECRET", "change-this-secret")
 JWT_EXPIRE_MINUTES = int(os.environ.get("JWT_EXPIRE_MINUTES", "240"))
