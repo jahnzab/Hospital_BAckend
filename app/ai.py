@@ -263,40 +263,38 @@ from typing import Dict, Any, List, Optional
 import json
 import re
 from datetime import datetime, date, timedelta
+from supabase import create_client
+from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
 
 class EnhancedHospitalAI:
-    """
-    Enhanced AI service for hospital system with intelligent booking assistance
-    Handles both information queries and booking flow intelligence
-    """
-    
+
+
     def __init__(self):
         """Initialize the enhanced AI service"""
-        # Initialize LLM with optimized settings for healthcare
+        load_dotenv()
+
+        # 🧠 Initialize LLM
         self.llm = ChatGroq(
             groq_api_key=os.getenv("GROQ_API_KEY"),
             model_name="llama3-8b-8192",
-            temperature=0.1  # Low temperature for consistent medical responses
+            temperature=0.1
         )
-        
-        # Initialize database connection
-        self.POSTGRES_URI = os.getenv("POSTGRES_URI")
-        if not self.POSTGRES_URI:
-            from .config import DATABASE_URL
-            self.POSTGRES_URI = DATABASE_URL
-            
-        if not self.POSTGRES_URI:
-            self.POSTGRES_URI = os.getenv("DATABASE_URL")
-            
-        if self.POSTGRES_URI:
-            self.engine = create_engine(self.POSTGRES_URI)
-            self.db = SQLDatabase(self.engine)
-        
-        # Enhanced symptom-to-specialization mapping with medical intelligence
+
+        # 🔗 Initialize Supabase client (instead of SQLAlchemy)
+        self.SUPABASE_URL = os.getenv("SUPABASE_URL")
+        self.SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+        if not self.SUPABASE_URL or not self.SUPABASE_KEY:
+            raise ValueError("Supabase credentials are missing in environment variables")
+
+        self.supabase = create_client(self.SUPABASE_URL, self.SUPABASE_KEY)
+
+        # 🩺 Initialize knowledge base
         self.medical_knowledge = self._build_medical_knowledge_base()
+
 
     def _build_medical_knowledge_base(self) -> Dict[str, Any]:
         """Build comprehensive medical knowledge base for better symptom analysis"""
